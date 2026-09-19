@@ -762,3 +762,80 @@ select {
   border-color: var(--success);
   color: var(--success);
 }
+
+/* Monochrome Iris theme */
+:root {
+  --primary: #111111;
+  --primary-soft: #eeeeee;
+  --success: #111111;
+  --success-soft: #f0f0f0;
+  --danger: #111111;
+  --danger-soft: #dddddd;
+  --warning: #333333;
+  --warning-soft: #e8e8e8;
+  --text-main: #111111;
+  --text-muted: #666666;
+  --border: #cccccc;
+  --surface: #ffffff;
+  --surface-alt: #f4f4f4;
+  --shadow: 0 12px 28px rgba(0, 0, 0, 0.12);
+}
+
+html,
+body {
+  background: #f2f2f2;
+}
+
+.primary-button,
+.secondary-button.is-active {
+  background: #111111;
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
+.secondary-button,
+.danger-button,
+.active-badge,
+.model-combo__option.is-active {
+  background: #eeeeee;
+  color: #111111;
+}
+
+.panel-card,
+.template-item,
+.model-combo__list {
+  border-color: #d0d0d0;
+  background: #ffffff;
+}
+
+.template-item.is-active {
+  border-color: #111111;
+  background: #f5f5f5;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.12);
+}
+
+.status-message.is-success,
+.status-message.is-error,
+.status-message.is-warning {
+  color: #111111;
+}
+
+.update-banner,
+.parse-section {
+  border-color: #d0d0d0;
+}
+
+.tab-nav {
+  border-bottom-color: #d8d8d8;
+}
+
+.field-block input:focus,
+.field-block select:focus {
+  border-color: #111111;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.12);
+}
+
+.empty-state {
+  border-color: #cccccc;
+  background: #fafafa;
+}

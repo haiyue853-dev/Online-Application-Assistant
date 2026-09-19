@@ -9,6 +9,8 @@ const DEFAULT_STORE = {
   profile: {
     values: {},
     family: [],
+    internships: [],
+    projects: [],
     custom: []
   }
 };
@@ -128,6 +130,7 @@ async function bootstrap() {
   bindEvents();
   applyTabFromHash();
   await StorageService.ensureDefaults();
+  await syncActiveTemplateToProfile();
   await render();
   initializeUpdateFeature().catch((error) => {
     console.warn("网申助手更新检查初始化失败:", error);
@@ -172,8 +175,12 @@ function cacheElements() {
   elements.profileForm = document.getElementById("profile-form");
   elements.profilePreset = document.getElementById("profile-preset");
   elements.profileFamily = document.getElementById("profile-family");
+  elements.profileInternships = document.getElementById("profile-internships");
+  elements.profileProjects = document.getElementById("profile-projects");
   elements.profileCustom = document.getElementById("profile-custom");
   elements.profileAddMember = document.getElementById("profile-add-member");
+  elements.profileAddInternship = document.getElementById("profile-add-internship");
+  elements.profileAddProject = document.getElementById("profile-add-project");
   elements.profileAddCustom = document.getElementById("profile-add-custom");
   elements.profileStatus = document.getElementById("profile-status");
   elements.currentVersion = document.getElementById("current-version");
@@ -229,6 +236,14 @@ function bindEvents() {
     elements.profileFamily.insertAdjacentHTML("beforeend", familyRowHtml({ relation: "父亲" }));
     markProfileDirty();
   });
+  elements.profileAddInternship.addEventListener("click", () => {
+    elements.profileInternships.insertAdjacentHTML("beforeend", repeatableRowHtml("internships", {}));
+    markProfileDirty();
+  });
+  elements.profileAddProject.addEventListener("click", () => {
+    elements.profileProjects.insertAdjacentHTML("beforeend", repeatableRowHtml("projects", {}));
+    markProfileDirty();
+  });
   elements.profileAddCustom.addEventListener("click", () => {
     elements.profileCustom.insertAdjacentHTML("beforeend", customRowHtml({ key: "", value: "" }));
     markProfileDirty();
@@ -259,7 +274,10 @@ function bindEvents() {
     }
 
     if (changes.templates || changes.activeTemplateId || changes.aiConfig || changes.profile) {
-      render().catch((error) => {
+      const refresh = changes.templates || changes.activeTemplateId
+        ? syncActiveTemplateToProfile()
+        : Promise.resolve();
+      refresh.then(() => render()).catch((error) => {
         console.error("网申助手页面渲染失败:", error);
       });
     }
@@ -335,6 +353,19 @@ function renderConfig(aiConfig) {
   elements.apiKeyInput.value = aiConfig.apiKey || "";
   syncProviderSelection();
   updateUrlWarning();
+}
+
+async function syncActiveTemplateToProfile() {
+  await StorageService.update((draft) => {
+    const activeTemplate = draft.templates.find((template) => template.id === draft.activeTemplateId) || draft.templates[0];
+    if (!activeTemplate) return draft;
+
+    const resumeFields = activeTemplate.groups.flatMap((group) =>
+      group.fields.map((field) => ({ group: group.name, key: field.key, value: field.value }))
+    );
+    draft.profile = self.ResumeProProfile.mergeResumeFieldsIntoProfile(draft.profile, resumeFields);
+    return draft;
+  });
 }
 
 function renderProviderOptions() {
@@ -815,6 +846,8 @@ function renderProfile(profile) {
     </section>
   `).join("");
   elements.profileFamily.innerHTML = profile.family.map(familyRowHtml).join("");
+  elements.profileInternships.innerHTML = profile.internships.map((record) => repeatableRowHtml("internships", record)).join("");
+  elements.profileProjects.innerHTML = profile.projects.map((record) => repeatableRowHtml("projects", record)).join("");
   elements.profileCustom.innerHTML = profile.custom.map(customRowHtml).join("");
   popupState.profileDirty = false;
 }
@@ -864,6 +897,21 @@ function familyRowHtml(member) {
     <div class="profile-row">
       ${profileInputHtml({ key: "关系", type: "select", options: api.FAMILY_RELATIONS }, member.relation || "", attributes("relation"))}
       ${api.FAMILY_FIELDS.map((field) => profileInputHtml(field, member[field.id] || "", attributes(field.id))).join("")}
+      <div class="profile-row__actions">
+        <button class="text-button" type="button" data-remove-row>删除</button>
+      </div>
+    </div>
+  `;
+}
+
+function repeatableRowHtml(kind, record) {
+  const definition = self.ResumeProProfile.REPEATABLE_GROUPS.find((group) => group.id === kind);
+  const row = ++popupState.profileRowSeq;
+  const attributes = (field) => `data-kind="${kind}" data-row="${row}" data-field="${field}"`;
+
+  return `
+    <div class="profile-row">
+      ${definition.fields.map((field) => profileInputHtml(field, record[field.id] || "", attributes(field.id))).join("")}
       <div class="profile-row__actions">
         <button class="text-button" type="button" data-remove-row>删除</button>
       </div>
@@ -967,6 +1015,18 @@ function stripProfileSecrets(profile) {
     }
   }
   next.family = self.ResumeProProfile.normalizeProfile({ family: next.family }).family;
+
+  for (const definition of self.ResumeProProfile.REPEATABLE_GROUPS) {
+    for (const record of next[definition.id]) {
+      for (const field of definition.fields) {
+        if (record[field.id] && isSecretFieldValue(record[field.id])) {
+          record[field.id] = "";
+          omitted += 1;
+        }
+      }
+    }
+    next[definition.id] = self.ResumeProProfile.normalizeProfile({ [definition.id]: next[definition.id] })[definition.id];
+  }
 
   return { profile: next, omitted };
 }
@@ -1811,7 +1871,7 @@ async function handleParseResumeClick() {
 
     const fields = normalizeParsedResult(result.fields);
     // 先留住解析结果：下面存模板就算失败，也还能下载 Excel，不用再调一次 AI。
-    popupState.lastParsedFields = result.fields;
+    popupState.lastParsedFields = fields;
     if (elements.parseDownloadButton) elements.parseDownloadButton.hidden = false;
     let template = null;
 
@@ -1823,10 +1883,11 @@ async function handleParseResumeClick() {
       };
       draft.templates.unshift(template);
       draft.activeTemplateId = template.id;
+      draft.profile = self.ResumeProProfile.mergeResumeFieldsIntoProfile(draft.profile, fields);
       return draft;
     });
 
-    showParseStatus(`已存为模板「${template.name}」并设为当前，共 ${countTemplateFields(template)} 个字段。`, "success", 0);
+    showParseStatus(`已存为模板「${template.name}」并设为当前，共 ${countTemplateFields(template)} 个字段；个人概况、实习和项目内容已同步到「我的信息」。`, "success", 0);
     updateParseFileSelection(null);
   } catch (error) {
     showParseStatus(error.message || "简历解析失败。", "error", 0);

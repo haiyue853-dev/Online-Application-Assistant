@@ -26,6 +26,14 @@
       ]
     },
     {
+      name: "个人概况",
+      fields: [
+        { id: "identity", key: "身份", placeholder: "例如：2027 届硕士应届毕业生", aliases: ["当前身份", "求职身份", "学生身份", "人员身份"] },
+        { id: "summary", key: "简介", label: "个人简介", type: "textarea", aliases: ["个人简介", "自我介绍", "个人总结"] },
+        { id: "highlights", key: "亮点", label: "个人亮点", type: "textarea", aliases: ["个人亮点", "核心优势", "个人优势"] }
+      ]
+    },
+    {
       name: "户籍与地区",
       fields: [
         { id: "nativeProvince", key: "籍贯省", label: "籍贯（省）" },
@@ -100,6 +108,40 @@
     { id: "phone", key: "联系电话" }
   ];
 
+  const REPEATABLE_GROUPS = [
+    {
+      id: "internships",
+      group: "实习经历",
+      title: "实习经历",
+      addLabel: "添加实习经历",
+      prefix: "实习",
+      fields: [
+        { id: "company", key: "公司", aliases: ["单位", "实习单位"] },
+        { id: "department", key: "部门" },
+        { id: "role", key: "岗位", aliases: ["职位", "职务"] },
+        { id: "period", key: "起止时间", placeholder: "例如：2025.06 - 2025.09", aliases: ["实习时间", "工作时间"] },
+        { id: "location", key: "工作地点", aliases: ["地点"] },
+        { id: "description", key: "职责", label: "工作内容 / 职责", type: "textarea", aliases: ["工作内容", "实习内容", "描述"] },
+        { id: "achievements", key: "成果", label: "成果 / 亮点", type: "textarea", aliases: ["业绩", "亮点"] }
+      ]
+    },
+    {
+      id: "projects",
+      group: "项目经历",
+      title: "项目经历",
+      addLabel: "添加项目经历",
+      prefix: "项目",
+      fields: [
+        { id: "name", key: "名称", label: "项目名称", aliases: ["项目名称"] },
+        { id: "role", key: "角色", label: "项目角色", aliases: ["项目角色"] },
+        { id: "period", key: "时间", label: "项目时间", placeholder: "例如：2025.03 - 2025.06", aliases: ["项目时间", "起止时间"] },
+        { id: "description", key: "描述", label: "项目简介 / 描述", type: "textarea", aliases: ["项目简介", "项目描述"] },
+        { id: "responsibilities", key: "职责", label: "项目职责", type: "textarea", aliases: ["项目职责", "工作内容"] },
+        { id: "achievements", key: "成果", label: "项目成果 / 亮点", type: "textarea", aliases: ["项目成果", "亮点"] }
+      ]
+    }
+  ];
+
   const CUSTOM_GROUP = "补充字段";
   const MAX_CUSTOM_FIELDS = 200;
   const MAX_OFFERED_LABELS = 20;
@@ -119,7 +161,20 @@
   }
 
   function emptyProfile() {
-    return { values: {}, family: [], custom: [] };
+    return { values: {}, family: [], internships: [], projects: [], custom: [] };
+  }
+
+  function normalizeRecords(source, definition) {
+    const records = [];
+    for (const item of Array.isArray(source) ? source : []) {
+      if (!item || typeof item !== "object") continue;
+      const record = {};
+      definition.fields.forEach((field) => {
+        record[field.id] = text(item[field.id]);
+      });
+      if (definition.fields.some((field) => record[field.id])) records.push(record);
+    }
+    return records;
   }
 
   function normalizeProfile(raw) {
@@ -146,6 +201,10 @@
         profile.family.push(next);
       }
     }
+
+    REPEATABLE_GROUPS.forEach((definition) => {
+      profile[definition.id] = normalizeRecords(source[definition.id], definition);
+    });
 
     // 值为空的补充字段也留着：那是从网页上加进来、等用户补内容的。
     // 同名的只留一条，优先留有内容的，免得先加的空行把后填的内容挤掉。
@@ -202,6 +261,16 @@
       });
     });
 
+    REPEATABLE_GROUPS.forEach((definition) => {
+      profile[definition.id].forEach((record, index) => {
+        definition.fields.forEach((field) => {
+          if (record[field.id]) {
+            fields.push({ group: definition.group, key: `${definition.prefix}${index + 1}${field.key}`, value: record[field.id] });
+          }
+        });
+      });
+    });
+
     const emitted = new Set(fields.map((field) => normalizeKey(field.key)));
     profile.custom.forEach((item) => {
       const normalized = normalizeKey(item.key);
@@ -223,7 +292,12 @@
 
   function hasProfileContent(profile) {
     const normalized = normalizeProfile(profile);
-    return Boolean(Object.keys(normalized.values).length || normalized.family.length || normalized.custom.length);
+    return Boolean(
+      Object.keys(normalized.values).length ||
+      normalized.family.length ||
+      REPEATABLE_GROUPS.some((definition) => normalized[definition.id].length) ||
+      normalized.custom.length
+    );
   }
 
   // 模板优先：模板里已有的字段名，档案里的同名字段不再加入。
@@ -255,6 +329,14 @@
     familyPrefixes(profile.family).forEach((prefix) => {
       add(`${prefix}关系`);
       FAMILY_FIELDS.forEach((field) => add(`${prefix}${field.key}`));
+    });
+    REPEATABLE_GROUPS.forEach((definition) => {
+      profile[definition.id].forEach((record, index) => {
+        definition.fields.forEach((field) => {
+          add(`${definition.prefix}${index + 1}${field.key}`);
+          (field.aliases || []).forEach((alias) => add(`${definition.prefix}${index + 1}${alias}`));
+        });
+      });
     });
     profile.custom.forEach((item) => add(item.key));
     (Array.isArray(resumeFields) ? resumeFields : []).forEach((field) => add(field?.key));
@@ -311,6 +393,7 @@
     const values = {};
     const family = new Map();
     const custom = new Map();
+    const repeatable = Object.fromEntries(REPEATABLE_GROUPS.map((definition) => [definition.id, new Map()]));
 
     for (const entry of Array.isArray(entries) ? entries : []) {
       const value = String(entry?.value ?? "");
@@ -323,10 +406,114 @@
       } else if (entry?.kind === "custom") {
         if (!custom.has(entry.row)) custom.set(entry.row, {});
         custom.get(entry.row)[entry.field] = value;
+      } else if (repeatable[entry?.kind]) {
+        if (!repeatable[entry.kind].has(entry.row)) repeatable[entry.kind].set(entry.row, {});
+        repeatable[entry.kind].get(entry.row)[entry.field] = value;
       }
     }
 
-    return normalizeProfile({ values, family: [...family.values()], custom: [...custom.values()] });
+    return normalizeProfile({
+      values,
+      family: [...family.values()],
+      custom: [...custom.values()],
+      ...Object.fromEntries(REPEATABLE_GROUPS.map((definition) => [definition.id, [...repeatable[definition.id].values()]]))
+    });
+  }
+
+  function recordIdentity(record, definition) {
+    const preferred = definition.id === "internships"
+      ? [record.company, record.role, record.period]
+      : [record.name, record.role, record.period];
+    return preferred.map(normalizeKey).filter(Boolean).join("|");
+  }
+
+  function mergeRecordGroups(localRecords, incomingRecords, definition) {
+    const merged = localRecords.map((record) => ({ ...record }));
+    incomingRecords.forEach((record) => {
+      const identity = recordIdentity(record, definition);
+      const match = identity && merged.find((item) => recordIdentity(item, definition) === identity);
+      if (!match) {
+        merged.push({ ...record });
+        return;
+      }
+      definition.fields.forEach((field) => {
+        if (!match[field.id] && record[field.id]) match[field.id] = record[field.id];
+      });
+    });
+    return merged;
+  }
+
+  function findSchemaField(key) {
+    const normalized = normalizeKey(key);
+    for (const group of PROFILE_SCHEMA) {
+      for (const field of group.fields) {
+        if ([field.key, field.label, ...(field.aliases || [])].some((candidate) => normalizeKey(candidate) === normalized)) {
+          return field;
+        }
+      }
+    }
+    return null;
+  }
+
+  function findRepeatableField(suffix, definition) {
+    const normalized = normalizeKey(suffix);
+    return definition.fields.find((field) =>
+      [field.key, field.label, ...(field.aliases || [])].some((candidate) => normalizeKey(candidate) === normalized)
+    );
+  }
+
+  function resolveRepeatableField(key, definition, inGroup) {
+    const normalizedKey = normalizeKey(key);
+    const numbered = normalizedKey.match(new RegExp(`^${definition.prefix}(?:经历)?([1-9]\\d*)(.+)$`));
+    if (numbered) {
+      return { bucket: `number:${numbered[1]}`, field: findRepeatableField(numbered[2], definition) };
+    }
+    if (!inGroup) return null;
+
+    const exact = findRepeatableField(key, definition);
+    if (exact) return { bucket: "single", field: exact };
+
+    const candidates = definition.fields.flatMap((field) =>
+      [field.key, field.label, ...(field.aliases || [])].map((name) => ({ field, suffix: normalizeKey(name) }))
+    ).sort((left, right) => right.suffix.length - left.suffix.length);
+    const match = candidates.find((candidate) => normalizedKey.endsWith(candidate.suffix));
+    if (!match) return null;
+
+    const anchor = normalizedKey.slice(0, -match.suffix.length) || "single";
+    return { bucket: `anchor:${anchor}`, field: match.field };
+  }
+
+  function profileFromResumeFields(resumeFields) {
+    const profile = emptyProfile();
+    const records = Object.fromEntries(REPEATABLE_GROUPS.map((definition) => [definition.id, new Map()]));
+
+    for (const item of Array.isArray(resumeFields) ? resumeFields : []) {
+      const key = text(item?.key);
+      const value = text(item?.value);
+      if (!key || !value) continue;
+
+      const schemaField = findSchemaField(key);
+      if (schemaField && !profile.values[schemaField.id]) profile.values[schemaField.id] = value;
+
+      for (const definition of REPEATABLE_GROUPS) {
+        const inGroup = normalizeKey(item?.group) === normalizeKey(definition.group);
+        const resolved = resolveRepeatableField(key, definition, inGroup);
+        if (!resolved?.field) continue;
+
+        if (!records[definition.id].has(resolved.bucket)) records[definition.id].set(resolved.bucket, {});
+        const record = records[definition.id].get(resolved.bucket);
+        if (!record[resolved.field.id]) record[resolved.field.id] = value;
+      }
+    }
+
+    REPEATABLE_GROUPS.forEach((definition) => {
+      profile[definition.id] = [...records[definition.id].values()];
+    });
+    return normalizeProfile(profile);
+  }
+
+  function mergeResumeFieldsIntoProfile(rawProfile, resumeFields) {
+    return mergeProfiles(rawProfile, profileFromResumeFields(resumeFields));
   }
 
   function isSameMember(left, right) {
@@ -354,6 +541,11 @@
       });
     });
 
+    const repeatable = Object.fromEntries(REPEATABLE_GROUPS.map((definition) => [
+      definition.id,
+      mergeRecordGroups(local[definition.id], incoming[definition.id], definition)
+    ]));
+
     const custom = local.custom.map((item) => {
       if (item.value) return item;
       const match = incoming.custom.find((other) => normalizeKey(other.key) === normalizeKey(item.key));
@@ -364,7 +556,7 @@
       if (!localKeys.has(normalizeKey(item.key))) custom.push(item);
     });
 
-    return normalizeProfile({ values, family, custom });
+    return normalizeProfile({ values, family, custom, ...repeatable });
   }
 
   const api = {
@@ -373,6 +565,7 @@
     FAMILY_GROUP,
     FAMILY_RELATIONS,
     PROFILE_SCHEMA,
+    REPEATABLE_GROUPS,
     addPendingFields,
     countPendingFields,
     countProfileValues,
@@ -381,8 +574,10 @@
     knownFieldKeys,
     mergeProfiles,
     mergeResumeFields,
+    mergeResumeFieldsIntoProfile,
     normalizeProfile,
     pickUnansweredLabels,
+    profileFromResumeFields,
     profileFromEntries,
     profileToResumeFields
   };

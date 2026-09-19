@@ -84,11 +84,8 @@ async function handleRepeatPlan(message, controller) {
 async function handleAiFill(message, controller = new AbortController()) {
   const aiConfig = normalizeAiConfig(message.aiConfig);
   const formFields = Array.isArray(message.formFields) ? message.formFields : [];
-  const resumeFields = Array.isArray(message.resumeFields) ? message.resumeFields : [];
-
-  if (!aiConfig.apiUrl || !aiConfig.model || !aiConfig.apiKey) {
-    return { success: false, error: "请先在插件中配置 AI 接口。" };
-  }
+  const sourceResumeFields = Array.isArray(message.resumeFields) ? message.resumeFields : [];
+  const resumeFields = ResumeProAIHelpers.combineProjectNarratives(formFields, sourceResumeFields);
 
   if (!formFields.length) {
     return { success: false, error: "当前页面没有可填写的表单字段。" };
@@ -118,7 +115,14 @@ async function handleAiFill(message, controller = new AbortController()) {
   };
   let warning = "";
 
-  if (remainingFormFields.length) {
+  const hasAiConfig = Boolean(aiConfig.apiUrl && aiConfig.model && aiConfig.apiKey);
+
+  if (remainingFormFields.length && !hasAiConfig) {
+    diagnostics.errorCode = "config";
+    warning = ruleMatches.length
+      ? "未配置 AI 接口，已填写本地可匹配字段；其余字段请配置 AI 后重试。"
+      : "请先在插件中配置 AI 接口。";
+  } else if (remainingFormFields.length) {
     const apiStart = performance.now();
     try {
       const prompt = buildUserPrompt(remainingFormFields, candidates);
@@ -206,11 +210,13 @@ async function handleParseResume(message) {
     "输出要求：",
     "1. 仅返回 JSON 数组，不含任何解释文字或 markdown 代码块",
     '2. 格式：[{"group":"分组名","key":"字段名","value":"字段值"}]',
-    "3. 分组参考：基本信息、教育背景、实习经历、科研经历、校园经历、论文、专利、技能、证书、奖励",
+    "3. 分组参考：基本信息、个人概况、教育背景、实习经历、项目经历、科研经历、校园经历、论文、专利、技能、证书、奖励",
     '4. 论文每条单独成行，字段名用"论文1标题"、"论文1期刊"、"论文1发表年份"等',
     '5. 专利每条单独成行，字段名用"专利1标题"、"专利1摘要"、"专利1申请号"等',
-    '6. 多段经历用"实习1公司"、"实习2公司"等区分',
-    "7. 字段值保持原文，不要缩写"
+    '6. 个人概况中提取"身份"、"简介"、"亮点"；没有明确原文时不要编造',
+    '7. 多段实习用"实习1公司"、"实习1岗位"、"实习1起止时间"、"实习1职责"等区分',
+    '8. 多段项目用"项目1名称"、"项目1角色"、"项目1时间"、"项目1描述"、"项目1职责"、"项目1成果"等区分',
+    "9. 字段值保持原文，不要缩写"
   ].join("\n");
 
   let response;

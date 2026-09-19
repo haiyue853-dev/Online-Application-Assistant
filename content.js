@@ -68,6 +68,19 @@
     return;
   }
 
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type !== "TOGGLE_SIDEBAR_V2") return false;
+    const host = document.getElementById(SIDEBAR_ID);
+    if (!host) {
+      sendResponse({ started: false, error: "页面助手尚未就绪，请刷新页面后重试。" });
+      return false;
+    }
+    const visible = host.style.display === "none";
+    host.style.display = visible ? "block" : "none";
+    sendResponse({ toggled: true, visible, protocol: 2 });
+    return false;
+  });
+
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init, { once: true });
   } else {
@@ -97,7 +110,8 @@
       position: "fixed",
       top: "96px",
       right: "24px",
-      zIndex: "2147483647"
+      zIndex: "2147483647",
+      display: "none"
     });
 
     document.body.appendChild(host);
@@ -112,13 +126,20 @@
           <p class="resume-pro__eyebrow">网申助手</p>
           <strong class="resume-pro__title">自动填表</strong>
         </div>
-        <button class="resume-pro__collapse" type="button" aria-label="折叠助手">−</button>
+        <div class="resume-pro__window-actions">
+          <button class="resume-pro__collapse" type="button" aria-label="折叠助手">−</button>
+          <button class="resume-pro__close" type="button" aria-label="关闭助手" title="关闭">×</button>
+        </div>
       </div>
       <div class="resume-pro__body">
         <label class="resume-pro__field">
           <span>当前模板</span>
           <select class="resume-pro__select" id="resume-pro-template-select"></select>
         </label>
+        <div class="resume-pro__quick-actions">
+          <button class="resume-pro__manager-button" id="resume-pro-open-manager" type="button">打开管理面板</button>
+          <button class="resume-pro__manager-button" id="resume-pro-open-profile" type="button">编辑我的信息</button>
+        </div>
         <button class="resume-pro__ai-button" id="resume-pro-ai-fill" type="button">一键 AI 填写</button>
         <button class="resume-pro__manager-button" id="resume-pro-repeat-fill" type="button">AI 辅助新增条目（先预览）</button>
         <button class="resume-pro__manager-button" id="resume-pro-cancel-fill" type="button" hidden>取消 AI 等待（保留本地匹配）</button>
@@ -136,15 +157,30 @@
           <textarea id="resume-pro-diagnostics-text" readonly aria-label="填写诊断摘要，可选择复制" rows="14"></textarea>
         </details>
         <div class="resume-pro__divider"></div>
-        <div class="resume-pro__groups" id="resume-pro-groups"></div>
-        <div class="resume-pro__footer">
-          <button class="resume-pro__manager-button" id="resume-pro-open-manager" type="button">打开管理面板</button>
-          <p class="resume-pro__footer-tip">管理面板会在新的浏览器标签页打开。</p>
+        <div class="resume-pro__preview-heading">
+          <strong>信息预览</strong>
+          <span>点击字段可复制或填入网页</span>
         </div>
+        <div class="resume-pro__groups" id="resume-pro-groups"></div>
       </div>
     `;
 
     shadowRoot.appendChild(sidebar);
+    const managerPanel = document.createElement("section");
+    managerPanel.className = "resume-pro__manager-panel";
+    managerPanel.id = "resume-pro-manager-panel";
+    managerPanel.hidden = true;
+    managerPanel.innerHTML = `
+      <div class="resume-pro__manager-header">
+        <div>
+          <p>网申助手</p>
+          <strong>管理面板</strong>
+        </div>
+        <button type="button" id="resume-pro-close-manager" aria-label="关闭管理面板">×</button>
+      </div>
+      <iframe id="resume-pro-manager-frame" title="网申助手管理面板"></iframe>
+    `;
+    sidebar.appendChild(managerPanel);
     const chipActions = document.createElement("div");
     chipActions.id = "resume-pro-chip-actions";
     chipActions.className = "resume-pro__chip-actions";
@@ -157,21 +193,32 @@
     `;
     shadowRoot.appendChild(chipActions);
     bindSidebarEvents(sidebar);
+    managerPanel.querySelector("#resume-pro-close-manager")?.addEventListener("click", closeManager);
   }
 
   function bindSidebarEvents(sidebar) {
     const header = sidebar.querySelector(".resume-pro__header");
+    const managerHeader = sidebar.querySelector(".resume-pro__manager-header");
     const collapseButton = sidebar.querySelector(".resume-pro__collapse");
+    const closeButton = sidebar.querySelector(".resume-pro__close");
     const templateSelect = sidebar.querySelector("#resume-pro-template-select");
     const aiFillButton = sidebar.querySelector("#resume-pro-ai-fill");
     const openManagerButton = sidebar.querySelector("#resume-pro-open-manager");
+    const openProfileButton = sidebar.querySelector("#resume-pro-open-profile");
     header.addEventListener("mousedown", startDrag);
+    managerHeader?.addEventListener("mousedown", startDrag);
     document.addEventListener("mousemove", onDrag);
     document.addEventListener("mouseup", stopDrag);
 
     collapseButton.addEventListener("click", () => {
       sidebar.classList.toggle("is-collapsed");
       collapseButton.textContent = sidebar.classList.contains("is-collapsed") ? "+" : "−";
+    });
+
+    closeButton.addEventListener("click", () => {
+      document.getElementById(SIDEBAR_ID).style.display = "none";
+      closeManager();
+      closeChipActionMenu();
     });
 
     templateSelect.addEventListener("change", async (event) => {
@@ -182,6 +229,7 @@
     aiFillButton.addEventListener("click", handleAiFillClick);
     sidebar.querySelector("#resume-pro-repeat-fill").addEventListener("click", handleRepeatFillClick);
     openManagerButton?.addEventListener("click", () => openManager());
+    openProfileButton?.addEventListener("click", () => openManager("profile"));
     sidebar.querySelector("#resume-pro-profile-offer-add")?.addEventListener("click", addUnansweredToProfile);
     sidebar.querySelector("#resume-pro-profile-offer-skip")?.addEventListener("click", closeProfileOffer);
 
@@ -196,6 +244,7 @@
     document.addEventListener("mousedown", () => closeChipActionMenu());
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
+        closeManager();
         closeChipActionMenu();
       }
     });
@@ -698,11 +747,6 @@
       return;
     }
 
-    if (!aiConfig?.apiUrl || !aiConfig?.model || !aiConfig?.apiKey) {
-      showStatus("请先在插件中配置 AI 接口。", "error");
-      return;
-    }
-
     button.disabled = true;
     const repeatButton = shadowRoot?.querySelector("#resume-pro-repeat-fill");
     if (repeatButton) repeatButton.disabled = true;
@@ -945,17 +989,30 @@
     const fieldMap = new Map();
     const fields = [];
     const radioGroups = new Set();
+    const radioScopeIds = new WeakMap();
+    let radioScopeSequence = 0;
+    const radioGroupKey = (radio) => {
+      const name = radio.name || "";
+      const scope = name
+        ? (radio.form || radio.closest("form") || document)
+        : (radio.closest("[role='radiogroup'], fieldset, .ant-radio-group, .el-radio-group, .arco-radio-group, .semi-radioGroup") || radio);
+      if (!radioScopeIds.has(scope)) radioScopeIds.set(scope, radioScopeSequence++);
+      return `${radioScopeIds.get(scope)}:${name || "__unnamed__"}`;
+    };
 
-    candidates.forEach((element, index) => {
+    candidates.forEach((element) => {
       if (element instanceof HTMLInputElement && element.type === "radio") {
-        const groupName = element.name || `__radio__${index}`;
+        const groupName = element.name || "";
+        const groupKey = radioGroupKey(element);
 
-        if (radioGroups.has(groupName)) {
+        if (radioGroups.has(groupKey)) {
           return;
         }
 
-        radioGroups.add(groupName);
-        const radioElements = candidates.filter((candidate) => candidate instanceof HTMLInputElement && candidate.type === "radio" && (candidate.name || `__radio__${index}`) === groupName);
+        radioGroups.add(groupKey);
+        const radioElements = candidates.filter((candidate) => candidate instanceof HTMLInputElement
+          && candidate.type === "radio"
+          && radioGroupKey(candidate) === groupKey);
         const fieldId = `field-radio-${fields.length}`;
         fieldMap.set(fieldId, { kind: "radio", elements: radioElements });
         fields.push({
@@ -1192,6 +1249,38 @@
       && !(isPlaceholder && isPlaceholder({ value: option.value, text: option.text, disabled: option.disabled })));
   }
 
+  async function selectComboboxOption(element, value) {
+    element.click();
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      if (attempt > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, 50));
+      }
+
+      const optionElements = Array.from(document.querySelectorAll(
+        "[role='option'], .ant-select-item-option, .el-select-dropdown__item, .arco-select-option, .semi-select-option"
+      )).filter((option) => isVisible(option)
+        && !option.closest(`#${SIDEBAR_ID}`)
+        && option.getAttribute("aria-disabled") !== "true"
+        && !option.disabled);
+      const optionIndex = self.ResumeProAIHelpers?.findSelectOptionIndex?.(
+        optionElements.map((option) => ({
+          value: option.getAttribute("data-value") || option.getAttribute("value") || "",
+          text: option.getAttribute("aria-label") || option.textContent?.trim() || "",
+          disabled: false
+        })),
+        value
+      ) ?? -1;
+
+      if (optionIndex >= 0) {
+        optionElements[optionIndex].click();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function setElementValue(element, value) {
     if (element && typeof element === "object" && element.kind === "radio") {
       const radioOptions = element.elements.map((radio) => ({ value: radio.value, text: getRadioOptionLabel(radio), disabled: radio.disabled }));
@@ -1214,6 +1303,12 @@
 
     if (element && typeof element === "object" && element.kind === "element") {
       element = element.element;
+    }
+
+    if (element instanceof HTMLInputElement
+      && element.readOnly
+      && element.getAttribute("role") === "combobox") {
+      return selectComboboxOption(element, value);
     }
 
     if (element instanceof HTMLInputElement && ["date", "month", "datetime-local", "time"].includes(element.type)) {
@@ -1548,15 +1643,22 @@
       .trim();
   }
 
-  async function openManager(tab = "") {
-    try {
-      const result = await chrome.runtime.sendMessage({ type: "OPEN_MANAGER", tab });
-      if (!result?.opened) {
-        showStatus(result?.error || "无法打开管理面板，请从浏览器工具栏点击网申助手。", "error");
-      }
-    } catch {
-      showStatus("无法打开管理面板，请从浏览器工具栏点击网申助手。", "error");
-    }
+  function openManager(tab = "") {
+    const managerPanel = shadowRoot?.querySelector("#resume-pro-manager-panel");
+    const managerFrame = shadowRoot?.querySelector("#resume-pro-manager-frame");
+    if (!managerPanel || !managerFrame) return;
+
+    managerPanel.hidden = false;
+    shadowRoot.querySelector(".resume-pro")?.classList.add("is-managing");
+    const hash = tab === "profile" ? "#profile" : "";
+    const targetUrl = `${chrome.runtime.getURL("popup.html")}${hash}`;
+    if (managerFrame.src !== targetUrl) managerFrame.src = targetUrl;
+  }
+
+  function closeManager() {
+    const managerPanel = shadowRoot?.querySelector("#resume-pro-manager-panel");
+    if (managerPanel) managerPanel.hidden = true;
+    shadowRoot?.querySelector(".resume-pro")?.classList.remove("is-managing");
   }
 
   function isFillTarget(target) {
@@ -1748,10 +1850,13 @@
       handleFieldChipClick,
       highlightFilledField,
       injectFieldHighlightStyles,
+      openManager,
+      closeManager,
       isInViewport,
       applyChipValue,
       composeChipText,
       syncChipSelectionState,
+      setElementValue,
       setCurrentStore(store) {
         state.currentStore = store;
       },

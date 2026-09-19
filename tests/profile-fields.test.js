@@ -51,6 +51,62 @@ test("profile fields: presets, numbered repeat relations, filled custom fields o
   assert.equal(profileApi.countPendingFields({ custom: [{ key: "待补字段", value: "" }] }), 1);
 });
 
+test("profile includes overview, internship and project fields for one-click filling", () => {
+  const fields = profileApi.profileToResumeFields({
+    values: { identity: "2027 届硕士应届毕业生", summary: "关注用户体验", highlights: "跨团队推进能力强" },
+    internships: [{ company: "星河科技", role: "产品实习生", period: "2025.06 - 2025.09", description: "负责需求分析" }],
+    projects: [{ name: "网申助手", role: "负责人", period: "2025.01 - 至今", description: "浏览器扩展" }]
+  });
+
+  assert.deepEqual(fields, [
+    { group: "个人概况", key: "身份", value: "2027 届硕士应届毕业生" },
+    { group: "个人概况", key: "简介", value: "关注用户体验" },
+    { group: "个人概况", key: "亮点", value: "跨团队推进能力强" },
+    { group: "实习经历", key: "实习1公司", value: "星河科技" },
+    { group: "实习经历", key: "实习1岗位", value: "产品实习生" },
+    { group: "实习经历", key: "实习1起止时间", value: "2025.06 - 2025.09" },
+    { group: "实习经历", key: "实习1职责", value: "负责需求分析" },
+    { group: "项目经历", key: "项目1名称", value: "网申助手" },
+    { group: "项目经历", key: "项目1角色", value: "负责人" },
+    { group: "项目经历", key: "项目1时间", value: "2025.01 - 至今" },
+    { group: "项目经历", key: "项目1描述", value: "浏览器扩展" }
+  ]);
+});
+
+test("parsed resume fields sync overview, internships and projects into 我的信息", () => {
+  const profile = profileApi.mergeResumeFieldsIntoProfile(
+    { values: { identity: "本机身份" }, internships: [], projects: [] },
+    [
+      { group: "个人概况", key: "个人简介", value: "数据产品方向" },
+      { group: "个人概况", key: "身份", value: "解析身份" },
+      { group: "实习经历", key: "实习1公司", value: "星河科技" },
+      { group: "实习经历", key: "实习1岗位", value: "产品实习生" },
+      { group: "项目经历", key: "项目1名称", value: "网申助手" },
+      { group: "项目经历", key: "项目1项目描述", value: "自动填写扩展" }
+    ]
+  );
+
+  assert.equal(profile.values.identity, "本机身份", "already saved profile content wins");
+  assert.equal(profile.values.summary, "数据产品方向");
+  assert.deepEqual(profile.internships.map((record) => [record.company, record.role]), [["星河科技", "产品实习生"]]);
+  assert.deepEqual(profile.projects.map((record) => [record.name, record.description]), [["网申助手", "自动填写扩展"]]);
+});
+
+test("semanticized parsed fields also sync into 我的信息", () => {
+  const profile = profileApi.profileFromResumeFields([
+    { group: "实习经历", key: "星河科技实习经历-公司", value: "星河科技" },
+    { group: "实习经历", key: "星河科技实习经历-岗位", value: "产品实习生" },
+    { group: "项目经历", key: "网申助手项目经历-名称", value: "网申助手" },
+    { group: "项目经历", key: "网申助手项目经历-描述", value: "自动填写扩展" },
+    { group: "项目经历", key: "网申助手项目经历-成果", value: "减少重复录入" }
+  ]);
+
+  assert.deepEqual(profile.internships.map((record) => [record.company, record.role]), [["星河科技", "产品实习生"]]);
+  assert.deepEqual(profile.projects.map((record) => [record.name, record.description, record.achievements]), [
+    ["网申助手", "自动填写扩展", "减少重复录入"]
+  ]);
+});
+
 test("template fields win over profile fields with the same name", () => {
   const merged = profileApi.mergeResumeFields(
     [{ group: "基本信息", key: "姓名", value: "模板里的名字" }],
@@ -138,12 +194,17 @@ test("form entries round-trip into a profile", () => {
     { kind: "family", row: "3", field: "relation", value: "母亲" },
     { kind: "family", row: "3", field: "name", value: "李母" },
     { kind: "family", row: "4", field: "relation", value: "父亲" },
+    { kind: "internships", row: "5", field: "company", value: "星河科技" },
+    { kind: "internships", row: "5", field: "role", value: "产品实习生" },
+    { kind: "projects", row: "6", field: "name", value: "网申助手" },
     { kind: "custom", row: "7", field: "key", value: "英语口语" },
     { kind: "custom", row: "7", field: "value", value: "流利" }
   ]);
 
   assert.deepEqual(profile.values, { name: "张三" });
   assert.deepEqual(profile.family.map((member) => [member.relation, member.name]), [["母亲", "李母"]]);
+  assert.deepEqual(profile.internships.map((record) => [record.company, record.role]), [["星河科技", "产品实习生"]]);
+  assert.deepEqual(profile.projects.map((record) => record.name), ["网申助手"]);
   assert.deepEqual(profile.custom, [{ key: "英语口语", value: "流利" }]);
 });
 

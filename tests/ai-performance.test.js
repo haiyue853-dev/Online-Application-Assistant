@@ -115,6 +115,19 @@ test("all-local matches make no API request or timer", async () => {
   assert.equal(env.timers.size, 0);
 });
 
+test("parsed resume fields that match locally still fill without AI configuration", async () => {
+  const env = loadBackground(() => { throw new Error("must not call"); });
+  const result = await env.run({
+    ...message,
+    aiConfig: {},
+    formFields: [formFields[0]]
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(Array.from(result.matches, (match) => ({ ...match })), [{ fieldId: "name", value: "测试用户" }]);
+  assert.equal(env.requests.length, 0);
+});
+
 for (const status of [400, 401, 429, 500, 503]) {
   test(`HTTP ${status} retains local results without reflecting provider secrets`, async () => {
     const env = loadBackground(() => ({ ok: false, status, json: async () => { throw new Error("private-key"); } }));

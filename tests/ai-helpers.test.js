@@ -124,6 +124,34 @@ test("parsed fields get semantic names from anchor values", () => {
   ]);
 });
 
+test("a single project description target receives both description and highlights", () => {
+  const resumeFields = [
+    { group: "项目经历", key: "网申助手项目经历-名称", value: "网申助手" },
+    { group: "项目经历", key: "网申助手项目经历-描述", value: "浏览器自动填表扩展" },
+    { group: "项目经历", key: "网申助手项目经历-成果", value: "减少重复录入" }
+  ];
+  const combined = helpers.combineProjectNarratives(
+    [{ fieldId: "description", group: "项目经历", label: "项目描述", inputType: "textarea" }],
+    resumeFields
+  );
+
+  assert.equal(combined[1].value, "浏览器自动填表扩展\n减少重复录入");
+  assert.equal(resumeFields[1].value, "浏览器自动填表扩展", "source fields stay unchanged");
+});
+
+test("separate project result fields keep description and highlights separate", () => {
+  const resumeFields = [
+    { group: "项目经历", key: "项目1描述", value: "浏览器自动填表扩展" },
+    { group: "项目经历", key: "项目1成果", value: "减少重复录入" }
+  ];
+  const combined = helpers.combineProjectNarratives([
+    { fieldId: "description", group: "项目经历", label: "项目描述", inputType: "textarea" },
+    { fieldId: "result", group: "项目经历", label: "项目成果", inputType: "textarea" }
+  ], resumeFields);
+
+  assert.deepEqual(combined, resumeFields);
+});
+
 test("findSelectOptionIndex: exact value or text", () => {
   assert.equal(helpers.findSelectOptionIndex(options(["男", "女"]), "男"), 0);
   assert.equal(helpers.findSelectOptionIndex([{ value: "1", text: "身份证" }], "1"), 0);

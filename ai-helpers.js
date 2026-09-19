@@ -105,6 +105,7 @@
     normalizeText,
     inferFieldSemantic,
     buildRuleBasedMatches,
+    combineProjectNarratives,
     selectResumeCandidates,
     findSelectOptionIndex,
     isPlaceholderOption,
@@ -210,6 +211,48 @@
     });
 
     return matches;
+  }
+
+  function combineProjectNarratives(formFields, resumeFields) {
+    const projectFormFields = (Array.isArray(formFields) ? formFields : []).filter((field) =>
+      /项目/.test(fieldContextText(field))
+    );
+    const hasDescriptionTarget = projectFormFields.some((field) => /描述|简介|内容|详情/.test(fieldContextText(field)));
+    const hasHighlightTarget = projectFormFields.some((field) => /亮点|成果|业绩/.test(fieldContextText(field)));
+    if (!hasDescriptionTarget || hasHighlightTarget) return resumeFields;
+
+    const combined = (Array.isArray(resumeFields) ? resumeFields : []).map((field) => ({ ...field }));
+    const records = new Map();
+    const suffixes = [
+      { kind: "description", values: ["项目描述", "项目简介", "描述", "简介", "内容"] },
+      { kind: "highlight", values: ["项目成果", "项目亮点", "成果", "亮点", "业绩"] }
+    ];
+
+    combined.forEach((field, index) => {
+      if (!/项目/.test(normalizeText(field.group))) return;
+      const normalizedKey = normalizeText(field.key);
+      const matched = suffixes.flatMap((entry) =>
+        entry.values.map((suffix) => ({ kind: entry.kind, suffix: normalizeText(suffix) }))
+      ).sort((left, right) => right.suffix.length - left.suffix.length)
+        .find((entry) => normalizedKey.endsWith(entry.suffix));
+      if (!matched) return;
+
+      const bucket = normalizedKey.slice(0, -matched.suffix.length) || "single";
+      if (!records.has(bucket)) records.set(bucket, { descriptions: [], highlights: [] });
+      records.get(bucket)[matched.kind === "description" ? "descriptions" : "highlights"].push(index);
+    });
+
+    records.forEach((record) => {
+      if (!record.descriptions.length || !record.highlights.length) return;
+      const highlights = record.highlights.map((index) => String(combined[index].value || "").trim()).filter(Boolean);
+      record.descriptions.forEach((index) => {
+        const parts = [String(combined[index].value || "").trim(), ...highlights]
+          .filter((value, valueIndex, values) => value && values.indexOf(value) === valueIndex);
+        combined[index].value = parts.join("\n");
+      });
+    });
+
+    return combined;
   }
 
   function filterValidMatches(formFields, matches) {

@@ -117,6 +117,8 @@ test("a parsed resume is stored as the active template, with Excel as an optiona
   const parsed = state.templates[0];
   assert.equal(parsed.name, "王五简历（AI 解析）");
   assert.equal(state.activeTemplateId, parsed.id);
+  assert.equal(state.profile.values.name, "王五");
+  assert.equal(state.profile.values.phone, "13800000000");
   assert.deepEqual(JSON.parse(JSON.stringify(parsed.groups)), [
     { name: "基本信息", fields: [{ key: "姓名", value: "王五" }, { key: "手机", value: "13800000000" }] },
     { name: "教育背景", fields: [{ key: "学校", value: "某某大学" }] }
@@ -132,6 +134,27 @@ test("a parsed resume is stored as the active template, with Excel as an optiona
 
   popup.api.updateParseFileSelection({ name: "另一份.txt", content: "" });
   assert.equal(popup.element("parse-download-button").hidden, true, "a new file hides the previous resume's download");
+});
+
+test("a parsed resume syncs normalized internship and project fields into 我的信息", async () => {
+  const { popup } = parsePopup({
+    success: true,
+    fields: [
+      { group: "实习经历", key: "实习1公司", value: "星河科技" },
+      { group: "实习经历", key: "实习1岗位", value: "产品实习生" },
+      { group: "项目经历", key: "项目1名称", value: "网申助手" },
+      { group: "项目经历", key: "项目1描述", value: "自动填写网申表" },
+      { group: "项目经历", key: "项目1成果", value: "减少重复录入" }
+    ]
+  });
+  await seed(popup);
+  popup.api.popupState.selectedParseFile = { name: "经历简历.txt", content: "星河科技 网申助手" };
+
+  await popup.api.handleParseResumeClick();
+
+  const profile = (await popup.readState()).profile;
+  assert.equal(JSON.stringify(profile.internships.map((record) => [record.company, record.role])), JSON.stringify([["星河科技", "产品实习生"]]));
+  assert.equal(JSON.stringify(profile.projects.map((record) => [record.name, record.description, record.achievements])), JSON.stringify([["网申助手", "自动填写网申表", "减少重复录入"]]));
 });
 
 test("a failed parse stores nothing", async () => {

@@ -191,7 +191,9 @@ test("runtime source sends extracted text and contains no PDF-as-image path", ()
     popupSource,
     /catch \(error\) \{[\s\S]*renderUpdateBanner\(cached\?\.release \|\| null, dismissedVersion, currentVersion\);/u
   );
-  assert.match(contentSource, /type:\s*["']OPEN_MANAGER["']/u);
+  assert.doesNotMatch(contentSource, /type:\s*["']OPEN_MANAGER["']/u);
+  assert.match(contentSource, /resume-pro-manager-frame/u);
+  assert.match(contentSource, /chrome\.runtime\.getURL\("popup\.html"\)/u);
   assert.doesNotMatch(contentSource, /data-src=.*popup\.html/u);
   assert.match(serviceWorkerSource, /chrome\.tabs\.create/u);
   assert.match(serviceWorkerSource, /getURL\("popup\.html"\)/u);

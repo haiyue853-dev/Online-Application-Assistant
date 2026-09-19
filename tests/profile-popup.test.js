@@ -52,7 +52,7 @@ test("a fresh install also gets an empty profile written", async () => {
   await popup.api.StorageService.ensureDefaults();
 
   assert.ok(popup.setCalls[0].includes("profile"));
-  assert.deepEqual(JSON.parse(JSON.stringify(popup.store.profile)), { values: {}, family: [], custom: [] });
+  assert.deepEqual(JSON.parse(JSON.stringify(popup.store.profile)), { values: {}, family: [], internships: [], projects: [], custom: [] });
 });
 
 test("backups carry 我的信息, minus anything that looks like a password", async () => {

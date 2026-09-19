@@ -8,7 +8,8 @@
     "offscreen",
     "storage",
     "activeTab",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -35,7 +36,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "content.css"
+        "content.css",
+        "popup.html"
       ],
       "matches": [
         "<all_urls>"

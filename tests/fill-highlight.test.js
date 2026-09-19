@@ -88,6 +88,11 @@ function loadHighlightHelpers(options = {}) {
       return true;
     }
 
+    click() {
+      this.clickCount = (this.clickCount || 0) + 1;
+      if (typeof this.onclick === "function") this.onclick();
+    }
+
     focus() {
       document.activeElement = this;
     }
@@ -128,6 +133,11 @@ function loadHighlightHelpers(options = {}) {
     querySelectorAll(selector) {
       if (selector.includes("input:not")) {
         return options.formElements || [];
+      }
+      if (selector.includes("[role='option']")) {
+        return typeof options.comboboxOptions === "function"
+          ? options.comboboxOptions()
+          : options.comboboxOptions || [];
       }
       return [];
     },
@@ -175,6 +185,7 @@ function loadHighlightHelpers(options = {}) {
     HTMLSelectElement: class HTMLSelectElement extends HTMLElement {},
     chrome: {
       runtime: {
+        getURL: (path) => `chrome-extension://test/${path}`,
         getManifest: () => ({ version: "0.2.1" }),
         onMessage: { addListener() {} },
         sendMessage: options.sendMessage || (async () => ({ success: true, matches: [] }))
@@ -184,6 +195,7 @@ function loadHighlightHelpers(options = {}) {
     document,
     navigator: { clipboard: { writeText: async () => {} } },
     self: { __RESUME_PRO_TEST__: true, ResumeProFormAgent: options.formAgent,
+      ResumeProAIHelpers: require("../ai-helpers"),
       ResumeProAIClient: { send: options.sendMessage || (async () => ({ success: true, matches: [] })),
         cancel: requestId => options.sendMessage({ type: 'CANCEL_AI_FILL', requestId }) } },
     window
@@ -275,6 +287,39 @@ test("AI fill loop highlights fields after successful writes", async () => {
   assert.equal(input.classList.contains("resume-pro__field-highlight"), true);
 });
 
+test("unnamed radios are grouped by their visual radio group instead of merged across the page", async () => {
+  let sent;
+  const formElements = [];
+  const { helpers, HTMLInputElement, HTMLLabelElement } = loadHighlightHelpers({
+    formElements,
+    sendMessage: async (message) => {
+      sent = message;
+      return { success: true, matches: [] };
+    }
+  });
+  const groups = [{}, {}];
+  ["男", "女", "群众", "党员"].forEach((text, index) => {
+    const radio = new HTMLInputElement();
+    const label = new HTMLLabelElement();
+    label.textContent = text;
+    radio.type = "radio";
+    radio.value = text;
+    radio.labels = [label];
+    radio.closest = (selector) => selector.includes("radiogroup") ? groups[Math.floor(index / 2)] : null;
+    formElements.push(radio);
+  });
+  helpers.setCurrentStore({
+    templates: [{ id: "one", groups: [{ name: "基本信息", fields: [{ key: "性别", value: "男" }] }] }],
+    activeTemplateId: "one",
+    aiConfig: { apiKey: "key", apiUrl: "https://example.test", model: "test" }
+  });
+
+  await helpers.handleAiFillClick({ currentTarget: { disabled: false } });
+
+  assert.equal(sent.formFields.length, 2);
+  assert.deepEqual(Array.from(sent.formFields, (field) => Array.from(field.options)), [["男", "女"], ["群众", "党员"]]);
+});
+
 test("radio fields highlight an externally associated label when available", () => {
   const { helpers, HTMLInputElement, HTMLLabelElement } = loadHighlightHelpers();
   const radio = new HTMLInputElement();
@@ -287,6 +332,52 @@ test("radio fields highlight an externally associated label when available", () 
 
   assert.equal(targets.length, 1);
   assert.equal(targets[0], label);
+});
+
+test("readonly ARIA combobox selects a real framework option instead of assigning display text", async () => {
+  let opened = false;
+  const option = { textContent: "硕士研究生", disabled: false, clickCount: 0,
+    getAttribute: () => null, closest: () => null,
+    getBoundingClientRect: () => ({ top: 0, left: 0, right: 200, bottom: 32, width: 200, height: 32 }),
+    click() { this.clickCount += 1; } };
+  const { helpers, HTMLInputElement } = loadHighlightHelpers({
+    comboboxOptions: () => opened ? [option] : []
+  });
+  const input = new HTMLInputElement();
+  input.readOnly = true;
+  input.attributes.role = "combobox";
+  input.onclick = () => { opened = true; };
+
+  const filled = await helpers.setElementValue(input, "硕士");
+
+  assert.equal(filled, true);
+  assert.equal(input.clickCount, 1);
+  assert.equal(option.clickCount, 1);
+  assert.equal(input.value, "", "自定义下拉框应由组件选项更新，不能伪造输入框显示值");
+});
+
+test("readonly ARIA combobox waits for asynchronously mounted options", async () => {
+  let optionsReady = false;
+  const option = { textContent: "上海市", disabled: false, clickCount: 0,
+    getAttribute: () => null, closest: () => null,
+    getBoundingClientRect: () => ({ top: 0, left: 0, right: 200, bottom: 32, width: 200, height: 32 }),
+    click() { this.clickCount += 1; } };
+  const { helpers, timers, HTMLInputElement } = loadHighlightHelpers({
+    comboboxOptions: () => optionsReady ? [option] : []
+  });
+  const input = new HTMLInputElement();
+  input.readOnly = true;
+  input.attributes.role = "combobox";
+
+  const pending = helpers.setElementValue(input, "上海");
+  await Promise.resolve();
+  const retryTimer = timers.find((timer) => timer.delay === 50);
+  assert.ok(retryTimer, "组件选项尚未挂载时应短暂等待");
+  optionsReady = true;
+  retryTimer.callback();
+
+  assert.equal(await pending, true);
+  assert.equal(option.clickCount, 1);
 });
 
 test("repeated highlights clear the previous cleanup timer", () => {
@@ -654,6 +745,32 @@ test("replacement clears a previously selected chip even when its value prefixes
 
   assert.equal(input.value, "产品设计师");
   assert.deepEqual(chips.map((chip) => chip.classList.contains("is-in-field")), [false, false, true]);
+});
+
+test("management opens inside the floating assistant and can return", () => {
+  const { helpers, HTMLElement } = loadHighlightHelpers();
+  const panel = new HTMLElement();
+  panel.hidden = true;
+  const frame = new HTMLElement();
+  frame.src = "";
+  const sidebar = new HTMLElement();
+  helpers.setShadowRoot({
+    querySelector(selector) {
+      if (selector === "#resume-pro-manager-panel") return panel;
+      if (selector === "#resume-pro-manager-frame") return frame;
+      if (selector === ".resume-pro") return sidebar;
+      return null;
+    }
+  });
+
+  helpers.openManager("profile");
+  assert.equal(panel.hidden, false);
+  assert.equal(sidebar.classList.contains("is-managing"), true);
+  assert.equal(frame.src, "chrome-extension://test/popup.html#profile");
+
+  helpers.closeManager();
+  assert.equal(panel.hidden, true);
+  assert.equal(sidebar.classList.contains("is-managing"), false);
 });
 
 test("highlight styles are not duplicated in content.css", () => {

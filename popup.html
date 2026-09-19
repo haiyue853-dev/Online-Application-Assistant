@@ -14,23 +14,7 @@
           <h1>网申助手</h1>
         </div>
         <p class="header-note">Excel 维护数据，插件负责导入与填写。</p>
-        <div class="version-row">
-          <span id="current-version">当前版本</span>
-          <button id="check-update-button" class="text-button" type="button">检查更新</button>
-          <span id="update-check-status" aria-live="polite"></span>
-        </div>
       </header>
-
-      <section id="update-banner" class="update-banner" aria-live="polite" hidden>
-        <div>
-          <strong id="update-title">发现新版本</strong>
-          <p id="update-summary"></p>
-        </div>
-        <div class="update-actions">
-          <button id="download-update-button" class="primary-button" type="button">下载更新</button>
-          <button id="dismiss-update-button" class="secondary-button" type="button">忽略此版本</button>
-        </div>
-      </section>
 
       <nav class="tab-nav" aria-label="功能分区">
         <button class="tab-button is-active" type="button" data-tab="templates">模板管理</button>
@@ -115,7 +99,7 @@
           <div class="panel-toolbar is-stacked">
             <div>
               <h2>我的信息</h2>
-              <p>网申表常问、简历里没有的内容填在这里，AI 填写时和当前模板一起用。模板里已有的字段以模板为准。</p>
+              <p>解析后的简历资料和网申补充信息都在这里核对、修改。自动填表时会优先使用这里保存的内容。</p>
             </div>
           </div>
 
@@ -145,8 +129,8 @@
             </section>
 
             <section class="profile-group">
-              <h3 class="profile-group__title">补充字段</h3>
-              <p class="profile-group__hint">上面没有的字段自己加。填表后网页上空着的字段，可以在侧边栏一键加到这里。</p>
+              <h3 class="profile-group__title">简历解析结果与补充字段</h3>
+              <p class="profile-group__hint">AI 解析后未归入上方栏目的教育、技能、证书等奖励会显示在这里，可直接修改；自动填表优先使用这里保存的内容。</p>
               <div class="profile-rows" id="profile-custom"></div>
               <button class="secondary-button" id="profile-add-custom" type="button">添加字段</button>
             </section>

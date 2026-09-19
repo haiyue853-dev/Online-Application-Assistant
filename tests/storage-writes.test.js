@@ -119,13 +119,17 @@ test("a parsed resume is stored as the active template, with Excel as an optiona
   assert.equal(state.activeTemplateId, parsed.id);
   assert.equal(state.profile.values.name, "王五");
   assert.equal(state.profile.values.phone, "13800000000");
+  assert.deepEqual(JSON.parse(JSON.stringify(state.profile.custom)), [
+    { group: "教育背景", key: "学校", value: "某某大学" }
+  ]);
+  assert.equal(popup.api.popupState.activeTab, "profile", "解析完成后直接展示我的信息");
   assert.deepEqual(JSON.parse(JSON.stringify(parsed.groups)), [
     { name: "基本信息", fields: [{ key: "姓名", value: "王五" }, { key: "手机", value: "13800000000" }] },
     { name: "教育背景", fields: [{ key: "学校", value: "某某大学" }] }
   ]);
   assert.equal(state.templates.length, 2, "the existing template is kept");
   assert.equal(popup.element("parse-download-button").hidden, false);
-  assert.match(popup.lastStatusFrom("parse-status"), /已存为模板「王五简历（AI 解析）」并设为当前，共 3 个字段/);
+  assert.match(popup.lastStatusFrom("parse-status"), /已存为模板「王五简历（AI 解析）」并同步到「我的信息」，共 3 个字段/);
 
   const saved = [];
   popup.api.backup.BackupIO.saveWorkbook = (rows) => saved.push(rows);

@@ -46,45 +46,6 @@ function buildImageOnlyPdf() {
   ]);
 }
 
-test("semantic versions compare numerically and support a leading v", () => {
-  assert.equal(utils.compareVersions("v0.2.10", "0.2.9"), 1);
-  assert.equal(utils.compareVersions("0.2.1", "v0.2.1"), 0);
-  assert.equal(utils.compareVersions("0.2.1-beta.2", "0.2.1"), -1);
-  assert.throws(() => utils.compareVersions("latest", "0.2.1"), /版本号格式无效/u);
-});
-
-test("release metadata must be stable and point to this repository", () => {
-  const release = utils.normalizeRelease({
-    tag_name: "v0.2.2",
-    html_url: "https://github.com/haiyue853-dev/Online-Application-Assistant/releases/tag/v0.2.2",
-    body: "## 修复 PDF 解析\n\n其他内容",
-    draft: false,
-    prerelease: false
-  });
-
-  assert.deepEqual(release, {
-    version: "v0.2.2",
-    url: "https://github.com/haiyue853-dev/Online-Application-Assistant/releases/tag/v0.2.2",
-    summary: "修复 PDF 解析"
-  });
-  assert.equal(utils.normalizeRelease({
-    tag_name: "v9.9.9",
-    html_url: "https://example.com/malicious.zip"
-  }), null);
-  assert.equal(utils.normalizeRelease({
-    tag_name: "v0.2.2-beta.1",
-    html_url: "https://github.com/haiyue853-dev/Online-Application-Assistant/releases/tag/v0.2.2-beta.1",
-    prerelease: true
-  }), null);
-});
-
-test("update checks use a bounded daily cache", () => {
-  const now = Date.UTC(2026, 8, 1, 12, 0, 0);
-  assert.equal(utils.shouldUseUpdateCache(now - 60_000, now), true);
-  assert.equal(utils.shouldUseUpdateCache(now - 24 * 60 * 60 * 1000, now), false);
-  assert.equal(utils.shouldUseUpdateCache(now + 60_000, now), false);
-});
-
 test("AI status errors remain distinct instead of blaming every failure on PDF", () => {
   assert.match(utils.formatAiError(400, "This model does not support image"), /请求格式或模型配置无效/u);
   assert.match(utils.formatAiError(401, "Unauthorized"), /API Key/u);
@@ -185,18 +146,12 @@ test("runtime source sends extracted text and contains no PDF-as-image path", ()
   assert.doesNotMatch(backgroundSource, /image_url|application\/pdf/u);
   assert.match(popupSource, /fileType:\s*"text"/u);
   assert.match(popupSource, /vendor\/pdfjs\/cmaps\//u);
-  assert.match(popupSource, /UPDATE_FAILURE_RETRY_MS/u);
-  assert.match(popupSource, /failed:\s*true/u);
-  assert.match(
-    popupSource,
-    /catch \(error\) \{[\s\S]*renderUpdateBanner\(cached\?\.release \|\| null, dismissedVersion, currentVersion\);/u
-  );
+  assert.doesNotMatch(popupSource, /checkForUpdates|UPDATE_API_URL|UPDATE_CACHE_KEY/u);
   assert.doesNotMatch(contentSource, /type:\s*["']OPEN_MANAGER["']/u);
   assert.match(contentSource, /resume-pro-manager-frame/u);
   assert.match(contentSource, /chrome\.runtime\.getURL\("popup\.html"\)/u);
   assert.doesNotMatch(contentSource, /data-src=.*popup\.html/u);
   assert.match(serviceWorkerSource, /chrome\.tabs\.create/u);
   assert.match(serviceWorkerSource, /getURL\("popup\.html"\)/u);
-  assert.match(htmlSource, /check-update-button/u);
-  assert.match(htmlSource, /download-update-button/u);
+  assert.doesNotMatch(htmlSource, /检查更新|check-update-button|download-update-button|update-banner/u);
 });

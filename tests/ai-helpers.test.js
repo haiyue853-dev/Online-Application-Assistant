@@ -5,6 +5,20 @@ const path = require("node:path");
 const vm = require("node:vm");
 const helpers = require("../ai-helpers.js");
 
+test("简历解析不会把 Python 等技术栈当成公司", () => {
+  const fields = helpers.normalizeParsedFields([
+    { group: "实习经历", key: "实习1公司", value: "Python" },
+    { group: "实习经历", key: "实习2公司", value: "Python、Java、SQL" },
+    { group: "实习经历", key: "实习3公司", value: "星河科技有限公司" }
+  ]);
+
+  assert.deepEqual(fields, [
+    { group: "技能", key: "技能特长", value: "Python" },
+    { group: "技能", key: "技能特长 (2)", value: "Python、Java、SQL" },
+    { group: "实习经历", key: "星河科技有限公司实习经历-公司", value: "星河科技有限公司" }
+  ]);
+});
+
 const options = (texts) => texts.map((text) => ({ value: text, text }));
 
 // 用真实的 ai-worker.js，桩掉 fetch，看它到底把哪些字段交给了 AI。

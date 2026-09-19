@@ -160,6 +160,14 @@
     return text(value).toLowerCase().replace(/[\s:：*（）()【】[\]\-_/.·]+/g, "");
   }
 
+  function customIdentity(item) {
+    return `${normalizeKey(item?.group || CUSTOM_GROUP)}|${normalizeKey(item?.key)}`;
+  }
+
+  function fieldIdentity(item) {
+    return `${normalizeKey(item?.group)}|${normalizeKey(item?.key)}`;
+  }
+
   function emptyProfile() {
     return { values: {}, family: [], internships: [], projects: [], custom: [] };
   }
@@ -211,8 +219,9 @@
     const byKey = new Map();
     for (const item of Array.isArray(source.custom) ? source.custom : []) {
       const key = text(item?.key);
-      const normalized = normalizeKey(key);
-      if (!normalized) continue;
+      const group = text(item?.group);
+      const normalized = customIdentity({ group, key });
+      if (!normalizeKey(key)) continue;
 
       const value = text(item?.value);
       const existing = byKey.get(normalized);
@@ -221,7 +230,7 @@
         continue;
       }
       if (byKey.size >= MAX_CUSTOM_FIELDS) continue;
-      byKey.set(normalized, { key, value });
+      byKey.set(normalized, { ...(group ? { group } : {}), key, value });
     }
     profile.custom = [...byKey.values()];
 
@@ -271,12 +280,16 @@
       });
     });
 
-    const emitted = new Set(fields.map((field) => normalizeKey(field.key)));
+    const reservedKeys = new Set(fields.map((field) => normalizeKey(field.key)));
+    const emittedCustom = new Set();
     profile.custom.forEach((item) => {
-      const normalized = normalizeKey(item.key);
-      if (!item.value || SECRET_LABEL.test(item.key) || SECRET_VALUE.test(item.value) || emitted.has(normalized)) return;
-      emitted.add(normalized);
-      fields.push({ group: CUSTOM_GROUP, key: item.key, value: item.value });
+      const group = item.group || CUSTOM_GROUP;
+      const normalizedKey = normalizeKey(item.key);
+      const identity = fieldIdentity({ group, key: item.key });
+      if (!item.value || SECRET_LABEL.test(item.key) || SECRET_VALUE.test(item.value)
+        || reservedKeys.has(normalizedKey) || emittedCustom.has(identity)) return;
+      emittedCustom.add(identity);
+      fields.push({ group, key: item.key, value: item.value });
     });
 
     return fields;
@@ -300,14 +313,15 @@
     );
   }
 
-  // 模板优先：模板里已有的字段名，档案里的同名字段不再加入。
+  // 「我的信息」是用户核对和修改后的最终资料，因此同分组同字段以它为准。
   function mergeResumeFields(templateFields, profileFields) {
     const template = Array.isArray(templateFields) ? templateFields : [];
-    const taken = new Set(template.map((field) => normalizeKey(field?.key)));
+    const profile = Array.isArray(profileFields) ? profileFields : [];
+    const taken = new Set(profile.map(fieldIdentity));
 
     return [
-      ...template,
-      ...(Array.isArray(profileFields) ? profileFields : []).filter((field) => !taken.has(normalizeKey(field.key)))
+      ...profile,
+      ...template.filter((field) => !taken.has(fieldIdentity(field)))
     ];
   }
 
@@ -444,7 +458,7 @@
   }
 
   function findSchemaField(key) {
-    const normalized = normalizeKey(key);
+    const normalized = normalizeKey(String(key ?? "").replace(/\s*\(\d+\)\s*$/u, ""));
     for (const group of PROFILE_SCHEMA) {
       for (const field of group.fields) {
         if ([field.key, field.label, ...(field.aliases || [])].some((candidate) => normalizeKey(candidate) === normalized)) {
@@ -491,18 +505,32 @@
       const key = text(item?.key);
       const value = text(item?.value);
       if (!key || !value) continue;
+      let consumed = false;
 
       const schemaField = findSchemaField(key);
-      if (schemaField && !profile.values[schemaField.id]) profile.values[schemaField.id] = value;
+      if (schemaField) {
+        const existing = profile.values[schemaField.id];
+        if (!existing) {
+          profile.values[schemaField.id] = value;
+        } else if (schemaField.type === "textarea" && !existing.split("\n").includes(value)) {
+          profile.values[schemaField.id] = `${existing}\n${value}`;
+        }
+        consumed = true;
+      }
 
       for (const definition of REPEATABLE_GROUPS) {
         const inGroup = normalizeKey(item?.group) === normalizeKey(definition.group);
         const resolved = resolveRepeatableField(key, definition, inGroup);
         if (!resolved?.field) continue;
+        consumed = true;
 
         if (!records[definition.id].has(resolved.bucket)) records[definition.id].set(resolved.bucket, {});
         const record = records[definition.id].get(resolved.bucket);
         if (!record[resolved.field.id]) record[resolved.field.id] = value;
+      }
+
+      if (!consumed) {
+        profile.custom.push({ group: text(item?.group) || CUSTOM_GROUP, key, value });
       }
     }
 
@@ -548,12 +576,12 @@
 
     const custom = local.custom.map((item) => {
       if (item.value) return item;
-      const match = incoming.custom.find((other) => normalizeKey(other.key) === normalizeKey(item.key));
-      return match?.value ? { key: item.key, value: match.value } : item;
+      const match = incoming.custom.find((other) => customIdentity(other) === customIdentity(item));
+      return match?.value ? { ...item, value: match.value } : item;
     });
-    const localKeys = new Set(local.custom.map((item) => normalizeKey(item.key)));
+    const localKeys = new Set(local.custom.map(customIdentity));
     incoming.custom.forEach((item) => {
-      if (!localKeys.has(normalizeKey(item.key))) custom.push(item);
+      if (!localKeys.has(customIdentity(item))) custom.push(item);
     });
 
     return normalizeProfile({ values, family, custom, ...repeatable });

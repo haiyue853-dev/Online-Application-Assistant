@@ -15,11 +15,6 @@ const DEFAULT_STORE = {
   }
 };
 
-const UPDATE_API_URL = "https://api.github.com/repos/haiyue853-dev/Online-Application-Assistant/releases/latest";
-const UPDATE_CACHE_KEY = "resumeProUpdateCache";
-const UPDATE_DISMISSED_KEY = "resumeProDismissedVersion";
-const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
-const UPDATE_FAILURE_RETRY_MS = 60 * 60 * 1000;
 const MAX_LISTED_ROW_NUMBERS = 20;
 const TEMPLATE_SHEET_HEADER = ["一级分类", "字段名", "值"];
 const BACKUP_FORMAT = "resume-pro.backup";
@@ -97,7 +92,6 @@ const StorageService = {
 
 const popupState = {
   activeTab: "templates",
-  availableRelease: null,
   reimportTemplateId: "",
   pendingBackup: null,
   modelRequestId: 0,
@@ -132,9 +126,6 @@ async function bootstrap() {
   await StorageService.ensureDefaults();
   await syncActiveTemplateToProfile();
   await render();
-  initializeUpdateFeature().catch((error) => {
-    console.warn("网申助手更新检查初始化失败:", error);
-  });
 }
 
 function cacheElements() {
@@ -183,14 +174,6 @@ function cacheElements() {
   elements.profileAddProject = document.getElementById("profile-add-project");
   elements.profileAddCustom = document.getElementById("profile-add-custom");
   elements.profileStatus = document.getElementById("profile-status");
-  elements.currentVersion = document.getElementById("current-version");
-  elements.checkUpdateButton = document.getElementById("check-update-button");
-  elements.updateCheckStatus = document.getElementById("update-check-status");
-  elements.updateBanner = document.getElementById("update-banner");
-  elements.updateTitle = document.getElementById("update-title");
-  elements.updateSummary = document.getElementById("update-summary");
-  elements.downloadUpdateButton = document.getElementById("download-update-button");
-  elements.dismissUpdateButton = document.getElementById("dismiss-update-button");
 }
 
 function bindEvents() {
@@ -257,12 +240,6 @@ function bindEvents() {
   elements.apiUrlInput.addEventListener("input", clearModelSuggestions);
   elements.apiUrlInput.addEventListener("input", updateUrlWarning);
   elements.apiKeyInput.addEventListener("input", clearModelSuggestions);
-  elements.checkUpdateButton.addEventListener("click", () => {
-    checkForUpdates({ force: true, announce: true });
-  });
-  elements.downloadUpdateButton.addEventListener("click", openAvailableRelease);
-  elements.dismissUpdateButton.addEventListener("click", dismissAvailableRelease);
-
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") {
       return;
@@ -925,8 +902,9 @@ function customRowHtml(item) {
 
   return `
     <div class="profile-row${item.key && !item.value ? " is-pending" : ""}">
+      ${profileInputHtml({ key: "分组", placeholder: "例如：教育背景" }, item.group || "", attributes("group"))}
       ${profileInputHtml({ key: "字段名" }, item.key, attributes("key"))}
-      ${profileInputHtml({ key: "内容" }, item.value, attributes("value"))}
+      ${profileInputHtml({ key: "内容", type: "textarea" }, item.value, attributes("value"))}
       <div class="profile-row__actions">
         <button class="text-button" type="button" data-remove-row>删除</button>
       </div>
@@ -1619,125 +1597,6 @@ function escapeHtml(value) {
     .replaceAll("'", "&#39;");
 }
 
-async function initializeUpdateFeature() {
-  const currentVersion = chrome.runtime.getManifest().version;
-  elements.currentVersion.textContent = `当前 v${currentVersion}`;
-  await checkForUpdates({ force: false, announce: false });
-}
-
-async function checkForUpdates({ force, announce }) {
-  const currentVersion = chrome.runtime.getManifest().version;
-  let cached = null;
-  let dismissedVersion = null;
-  elements.checkUpdateButton.disabled = true;
-
-  if (announce) {
-    elements.updateCheckStatus.textContent = "检查中...";
-  }
-
-  try {
-    const stored = await chrome.storage.local.get([UPDATE_CACHE_KEY, UPDATE_DISMISSED_KEY]);
-    cached = stored[UPDATE_CACHE_KEY];
-    dismissedVersion = stored[UPDATE_DISMISSED_KEY];
-    const cacheInterval = cached?.failed ? UPDATE_FAILURE_RETRY_MS : UPDATE_CHECK_INTERVAL_MS;
-
-    if (!force && ResumeProUtils.shouldUseUpdateCache(cached?.checkedAt, Date.now(), cacheInterval)) {
-      renderUpdateBanner(cached?.release || null, dismissedVersion, currentVersion);
-      return;
-    }
-
-    const response = await fetch(UPDATE_API_URL, {
-      headers: {
-        Accept: "application/vnd.github+json"
-      }
-    });
-
-    if (response.status === 404) {
-      await chrome.storage.local.set({
-        [UPDATE_CACHE_KEY]: { checkedAt: Date.now(), release: null, failed: false }
-      });
-      renderUpdateBanner(null, dismissedVersion, currentVersion);
-      if (announce) elements.updateCheckStatus.textContent = "暂无正式版本";
-      return;
-    }
-
-    if (!response.ok) {
-      throw new Error(`GitHub API HTTP ${response.status}`);
-    }
-
-    const release = ResumeProUtils.normalizeRelease(await response.json());
-    if (!release) {
-      throw new Error("GitHub Release 响应无效");
-    }
-
-    await chrome.storage.local.set({
-      [UPDATE_CACHE_KEY]: { checkedAt: Date.now(), release, failed: false }
-    });
-    const hasUpdate = renderUpdateBanner(release, dismissedVersion, currentVersion);
-
-    if (announce) {
-      elements.updateCheckStatus.textContent = hasUpdate ? "发现新版" : "已是最新版";
-    }
-  } catch (error) {
-    console.warn("网申助手更新检查失败:", error);
-    await chrome.storage.local.set({
-      [UPDATE_CACHE_KEY]: {
-        checkedAt: Date.now(),
-        release: cached?.release || null,
-        failed: true
-      }
-    }).catch(() => {});
-    renderUpdateBanner(cached?.release || null, dismissedVersion, currentVersion);
-    if (announce) {
-      elements.updateCheckStatus.textContent = "检查失败，不影响使用";
-    }
-  } finally {
-    elements.checkUpdateButton.disabled = false;
-  }
-}
-
-function renderUpdateBanner(release, dismissedVersion, currentVersion) {
-  let hasUpdate = false;
-
-  try {
-    hasUpdate = Boolean(release)
-      && ResumeProUtils.compareVersions(release.version, currentVersion) > 0
-      && release.version !== dismissedVersion;
-  } catch {
-    hasUpdate = false;
-  }
-
-  popupState.availableRelease = hasUpdate ? release : null;
-  elements.updateBanner.hidden = !hasUpdate;
-
-  if (hasUpdate) {
-    elements.updateTitle.textContent = `发现新版本 ${release.version}`;
-    elements.updateSummary.textContent = release.summary;
-  }
-
-  return hasUpdate;
-}
-
-async function openAvailableRelease() {
-  if (!popupState.availableRelease?.url) {
-    return;
-  }
-
-  await chrome.tabs.create({ url: popupState.availableRelease.url });
-}
-
-async function dismissAvailableRelease() {
-  if (!popupState.availableRelease?.version) {
-    return;
-  }
-
-  await chrome.storage.local.set({
-    [UPDATE_DISMISSED_KEY]: popupState.availableRelease.version
-  });
-  popupState.availableRelease = null;
-  elements.updateBanner.hidden = true;
-}
-
 popupState.selectedParseFile = null;
 popupState.statusTimers.parse = null;
 
@@ -1875,7 +1734,7 @@ async function handleParseResumeClick() {
     if (elements.parseDownloadButton) elements.parseDownloadButton.hidden = false;
     let template = null;
 
-    await StorageService.update((draft) => {
+    const updatedState = await StorageService.update((draft) => {
       template = {
         id: crypto.randomUUID(),
         name: resolveTemplateName(`${getTemplateNameFromFile(file.name)}（AI 解析）`, draft.templates),
@@ -1887,7 +1746,10 @@ async function handleParseResumeClick() {
       return draft;
     });
 
-    showParseStatus(`已存为模板「${template.name}」并设为当前，共 ${countTemplateFields(template)} 个字段；个人概况、实习和项目内容已同步到「我的信息」。`, "success", 0);
+    renderProfile(updatedState.profile);
+    setActiveTab("profile");
+    showStatus("profile", `简历解析完成，已同步 ${countTemplateFields(template)} 个字段。请核对后保存修改。`, "success", 0);
+    showParseStatus(`已存为模板「${template.name}」并同步到「我的信息」，共 ${countTemplateFields(template)} 个字段。`, "success", 0);
     updateParseFileSelection(null);
   } catch (error) {
     showParseStatus(error.message || "简历解析失败。", "error", 0);

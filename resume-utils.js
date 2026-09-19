@@ -9,8 +9,6 @@
     root.ResumeProUtils = api;
   }
 })(typeof self !== "undefined" ? self : globalThis, function createResumeProUtils() {
-  const RELEASE_PATH_PREFIX = "/haiyue853-dev/Online-Application-Assistant/releases/";
-
   function normalizeWhitespace(value) {
     return String(value ?? "")
       .replace(/[\t\f\v]+/g, " ")
@@ -149,120 +147,6 @@
     return "PDF 解析失败，请确认文件可以正常打开，或改用 Word / TXT 简历。";
   }
 
-  function parseVersion(value) {
-    const match = String(value ?? "")
-      .trim()
-      .match(/^v?(\d+(?:\.\d+){0,3})(?:-([0-9A-Za-z.-]+))?$/u);
-
-    if (!match) {
-      return null;
-    }
-
-    return {
-      numbers: match[1].split(".").map(Number),
-      prerelease: match[2] ? match[2].split(".") : []
-    };
-  }
-
-  function comparePrerelease(left, right) {
-    if (!left.length && !right.length) {
-      return 0;
-    }
-    if (!left.length) {
-      return 1;
-    }
-    if (!right.length) {
-      return -1;
-    }
-
-    const length = Math.max(left.length, right.length);
-    for (let index = 0; index < length; index += 1) {
-      if (left[index] === undefined) return -1;
-      if (right[index] === undefined) return 1;
-      if (left[index] === right[index]) continue;
-
-      const leftNumeric = /^\d+$/u.test(left[index]);
-      const rightNumeric = /^\d+$/u.test(right[index]);
-
-      if (leftNumeric && rightNumeric) {
-        return Number(left[index]) > Number(right[index]) ? 1 : -1;
-      }
-      if (leftNumeric !== rightNumeric) {
-        return leftNumeric ? -1 : 1;
-      }
-      return left[index].localeCompare(right[index], "en") > 0 ? 1 : -1;
-    }
-
-    return 0;
-  }
-
-  function compareVersions(leftValue, rightValue) {
-    const left = parseVersion(leftValue);
-    const right = parseVersion(rightValue);
-
-    if (!left || !right) {
-      throw new Error("版本号格式无效。");
-    }
-
-    const length = Math.max(left.numbers.length, right.numbers.length);
-    for (let index = 0; index < length; index += 1) {
-      const leftNumber = left.numbers[index] || 0;
-      const rightNumber = right.numbers[index] || 0;
-
-      if (leftNumber !== rightNumber) {
-        return leftNumber > rightNumber ? 1 : -1;
-      }
-    }
-
-    return comparePrerelease(left.prerelease, right.prerelease);
-  }
-
-  function isTrustedReleaseUrl(value) {
-    try {
-      const url = new URL(String(value ?? ""));
-      return url.protocol === "https:"
-        && url.hostname === "github.com"
-        && url.pathname.startsWith(RELEASE_PATH_PREFIX);
-    } catch {
-      return false;
-    }
-  }
-
-  function summarizeReleaseBody(value) {
-    const firstLine = String(value ?? "")
-      .split(/\r?\n/u)
-      .map((line) => line.replace(/^[#>*\-\s]+/u, "").trim())
-      .find(Boolean);
-
-    if (!firstLine) {
-      return "包含功能改进和问题修复。";
-    }
-
-    return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
-  }
-
-  function normalizeRelease(payload) {
-    if (!payload || typeof payload !== "object" || payload.draft || payload.prerelease) {
-      return null;
-    }
-
-    const version = String(payload.tag_name ?? "").trim();
-    if (!parseVersion(version) || !isTrustedReleaseUrl(payload.html_url)) {
-      return null;
-    }
-
-    return {
-      version,
-      url: payload.html_url,
-      summary: summarizeReleaseBody(payload.body || payload.name)
-    };
-  }
-
-  function shouldUseUpdateCache(checkedAt, now = Date.now(), intervalMs = 24 * 60 * 60 * 1000) {
-    const timestamp = Number(checkedAt);
-    return Number.isFinite(timestamp) && timestamp > 0 && now - timestamp >= 0 && now - timestamp < intervalMs;
-  }
-
   function formatAiError(status, detail) {
     const suffix = normalizeWhitespace(detail);
     const messages = {
@@ -280,13 +164,9 @@
   }
 
   return {
-    compareVersions,
     extractPageText,
     extractPdfText,
     formatAiError,
-    getPdfExtractionErrorMessage,
-    normalizeRelease,
-    parseVersion,
-    shouldUseUpdateCache
+    getPdfExtractionErrorMessage
   };
 });

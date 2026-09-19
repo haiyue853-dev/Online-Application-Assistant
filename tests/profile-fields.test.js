@@ -107,13 +107,41 @@ test("semanticized parsed fields also sync into 我的信息", () => {
   ]);
 });
 
-test("template fields win over profile fields with the same name", () => {
+test("我的信息中的修改值优先用于自动填表", () => {
   const merged = profileApi.mergeResumeFields(
     [{ group: "基本信息", key: "姓名", value: "模板里的名字" }],
     [{ group: "基本信息", key: "姓名", value: "档案里的名字" }, { group: "基本信息", key: "民族", value: "汉族" }]
   );
 
-  assert.deepEqual(merged.map((field) => field.value), ["模板里的名字", "汉族"]);
+  assert.deepEqual(merged.map((field) => field.value), ["档案里的名字", "汉族"]);
+});
+
+test("解析出的教育等非预置字段会带原分组显示在我的信息并参与填表", () => {
+  const profile = profileApi.profileFromResumeFields([
+    { group: "教育背景", key: "学校", value: "某某大学" },
+    { group: "教育背景", key: "专业", value: "计算机科学与技术" },
+    { group: "技能", key: "技能特长", value: "Python、Java、SQL" }
+  ]);
+
+  assert.equal(profile.values.skills, "Python、Java、SQL");
+  assert.deepEqual(profile.custom, [
+    { group: "教育背景", key: "学校", value: "某某大学" },
+    { group: "教育背景", key: "专业", value: "计算机科学与技术" }
+  ]);
+  assert.deepEqual(profileApi.profileToResumeFields(profile), [
+    { group: "语言与技能", key: "技能特长", value: "Python、Java、SQL" },
+    { group: "教育背景", key: "学校", value: "某某大学" },
+    { group: "教育背景", key: "专业", value: "计算机科学与技术" }
+  ]);
+});
+
+test("多条被纠正的技能都会保留在我的信息", () => {
+  const profile = profileApi.profileFromResumeFields([
+    { group: "技能", key: "技能特长", value: "Python" },
+    { group: "技能", key: "技能特长 (2)", value: "Java、SQL" }
+  ]);
+
+  assert.equal(profile.values.skills, "Python\nJava、SQL");
 });
 
 test("unanswered labels skip matched, filled, secret, file and known fields", () => {

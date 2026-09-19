@@ -28,6 +28,10 @@
     { type: "degree", keywords: ["学历", "学位", "培养层次", "degree"] }
   ];
 
+  const TECH_SKILL_TOKEN = /^(?:python|java|javascript|typescript|c|c\+\+|c#|go|golang|rust|php|ruby|swift|kotlin|scala|r|matlab|sql|html|css|vue(?:\.js)?|react(?:\.js)?|angular|node(?:\.js)?|spring(?:\s*boot)?|django|flask|fastapi|pytorch|tensorflow|pandas|numpy|mysql|postgresql|redis|mongodb|docker|kubernetes|git|linux|excel|powerbi|tableau)$/iu;
+  const TECH_SKILL_WORD = /\b(?:python|java|javascript|typescript|c\+\+|c#|golang|rust|php|ruby|swift|kotlin|scala|matlab|sql|html|css|vue(?:\.js)?|react(?:\.js)?|angular|node(?:\.js)?|spring(?:\s*boot)?|django|flask|fastapi|pytorch|tensorflow|pandas|numpy|mysql|postgresql|redis|mongodb|docker|kubernetes|git|linux|power\s*bi|tableau)\b/giu;
+  const COMPANY_INDICATOR = /公司|集团|科技|有限|股份|银行|事务所|研究院|实验室|工作室|software\s+foundation|foundation|technolog(?:y|ies)|\b(?:inc|corp|ltd|llc|company|studio)\b/iu;
+
   function detectCascadeGroups(fields, fieldMap) {
     const selectFields = fields.filter((f) => f.tagName === "select");
     let cascadeGroupIndex = 0;
@@ -472,8 +476,7 @@
       throw new Error("结果不是 JSON 数组。");
     }
 
-    return semanticizeParsedFields(
-      payload
+    const fields = payload
         .map((item) => {
           if (!item || typeof item !== "object") {
             return null;
@@ -490,7 +493,25 @@
           return { group, key, value };
         })
         .filter(Boolean)
-    );
+        .map(repairParsedFieldCategory);
+
+    return semanticizeParsedFields(fields);
+  }
+
+  function repairParsedFieldCategory(field) {
+    if (/公司|单位|雇主|employer|company/iu.test(field.key) && isLikelyTechnicalSkill(field.value)) {
+      return { group: "技能", key: "技能特长", value: field.value };
+    }
+    return field;
+  }
+
+  function isLikelyTechnicalSkill(value) {
+    const text = String(value ?? "").trim();
+    if (!text || COMPANY_INDICATOR.test(text)) return false;
+    if (TECH_SKILL_TOKEN.test(text)) return true;
+
+    const matches = text.match(TECH_SKILL_WORD) || [];
+    return matches.length >= 2 || (matches.length >= 1 && /熟悉|掌握|精通|技能|技术栈|开发|编程/iu.test(text));
   }
 
   // 占位项和禁用项：「请选择」「--」这类，以及 disabled 的选项。

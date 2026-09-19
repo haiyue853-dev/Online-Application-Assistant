@@ -1,0 +1,1766 @@
+(function () {
+  const SIDEBAR_ID = "resume-pro-sidebar";
+  const STORAGE_KEYS = ["templates", "activeTemplateId", "aiConfig", "profile"];
+  const FIELD_HIGHLIGHT_CLASS = "resume-pro__field-highlight";
+  const FIELD_HIGHLIGHT_STYLE_ID = "resume-pro-field-highlight-styles";
+  const FIELD_HIGHLIGHT_STYLE_TEXT = `
+.${FIELD_HIGHLIGHT_CLASS} {
+  animation: resume-pro-field-highlight 2.6s ease-out forwards !important;
+  outline: 2px solid rgba(34, 197, 94, 0.95) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14), 0 0 12px rgba(34, 197, 94, 0.5) !important;
+  background-color: rgba(34, 197, 94, 0.1) !important;
+}
+
+@keyframes resume-pro-field-highlight {
+  0% {
+    outline-color: rgba(34, 197, 94, 0.95);
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.14), 0 0 12px rgba(34, 197, 94, 0.5);
+    background-color: rgba(34, 197, 94, 0.1);
+  }
+
+  70% {
+    outline-color: rgba(34, 197, 94, 0.8);
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.09), 0 0 8px rgba(34, 197, 94, 0.28);
+    background-color: rgba(34, 197, 94, 0.06);
+  }
+
+  100% {
+    outline-color: rgba(34, 197, 94, 0);
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+    background-color: transparent;
+  }
+}
+  `;
+  const fieldHighlightTimers = new WeakMap();
+  const chipSelectionIdsByTarget = new WeakMap();
+  const chipWriteTargets = new WeakSet();
+  let shadowRoot = null;
+  const state = {
+    dragOffsetX: 0,
+    dragOffsetY: 0,
+    dragging: false,
+    currentStore: null,
+    statusTimer: null,
+    lastFocusedField: null,
+    chipAction: null
+  };
+
+  const StorageService = {
+    // 只读。每个网页加载都会跑一次，在这里写回会用这一刻的快照盖掉设置页刚存的内容；
+    // 缺省值由设置页补。
+    async ensureDefaults() {
+      const current = await chrome.storage.local.get(STORAGE_KEYS);
+      return normalizeStore(current);
+    },
+
+    async getState() {
+      const current = await chrome.storage.local.get(STORAGE_KEYS);
+      return normalizeStore(current);
+    },
+
+    async setActiveTemplate(templateId) {
+      await chrome.storage.local.set({ activeTemplateId: templateId });
+    }
+  };
+
+  if (window.top !== window) {
+    return;
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+
+  async function init() {
+    if (document.getElementById(SIDEBAR_ID)) {
+      return;
+    }
+
+    state.currentStore = await StorageService.ensureDefaults();
+    const cssText = await fetch(chrome.runtime.getURL("content.css")).then((r) => r.text());
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(cssText);
+    injectFieldHighlightStyles();
+    createSidebar(sheet);
+    renderSidebar();
+    bindStorageSync();
+    bindFocusTracking();
+  }
+
+  function createSidebar(sheet) {
+    const host = document.createElement("div");
+    host.id = SIDEBAR_ID;
+    Object.assign(host.style, {
+      position: "fixed",
+      top: "96px",
+      right: "24px",
+      zIndex: "2147483647"
+    });
+
+    document.body.appendChild(host);
+    shadowRoot = host.attachShadow({ mode: "closed" });
+    shadowRoot.adoptedStyleSheets = [sheet];
+
+    const sidebar = document.createElement("aside");
+    sidebar.className = "resume-pro";
+    sidebar.innerHTML = `
+      <div class="resume-pro__header" data-drag-handle="true">
+        <div class="resume-pro__title-wrap">
+          <p class="resume-pro__eyebrow">网申助手</p>
+          <strong class="resume-pro__title">自动填表</strong>
+        </div>
+        <button class="resume-pro__collapse" type="button" aria-label="折叠助手">−</button>
+      </div>
+      <div class="resume-pro__body">
+        <label class="resume-pro__field">
+          <span>当前模板</span>
+          <select class="resume-pro__select" id="resume-pro-template-select"></select>
+        </label>
+        <button class="resume-pro__ai-button" id="resume-pro-ai-fill" type="button">一键 AI 填写</button>
+        <button class="resume-pro__manager-button" id="resume-pro-repeat-fill" type="button">AI 辅助新增条目（先预览）</button>
+        <button class="resume-pro__manager-button" id="resume-pro-cancel-fill" type="button" hidden>取消 AI 等待（保留本地匹配）</button>
+        <p id="resume-pro-wait-hint" role="status" hidden></p>
+        <div class="resume-pro__status" id="resume-pro-status" aria-live="polite"></div>
+        <div class="resume-pro__fill-record" id="resume-pro-profile-offer" hidden>
+          <p class="resume-pro__save-note" id="resume-pro-profile-offer-text"></p>
+          <div class="resume-pro__save-actions">
+            <button class="resume-pro__ai-button" type="button" id="resume-pro-profile-offer-add">加到我的信息</button>
+            <button class="resume-pro__manager-button" type="button" id="resume-pro-profile-offer-skip">不用</button>
+          </div>
+        </div>
+        <details class="resume-pro__diagnostics" id="resume-pro-diagnostics" hidden>
+          <summary>填写诊断（不含简历内容）</summary>
+          <textarea id="resume-pro-diagnostics-text" readonly aria-label="填写诊断摘要，可选择复制" rows="14"></textarea>
+        </details>
+        <div class="resume-pro__divider"></div>
+        <div class="resume-pro__groups" id="resume-pro-groups"></div>
+        <div class="resume-pro__footer">
+          <button class="resume-pro__manager-button" id="resume-pro-open-manager" type="button">打开管理面板</button>
+          <p class="resume-pro__footer-tip">管理面板会在新的浏览器标签页打开。</p>
+        </div>
+      </div>
+    `;
+
+    shadowRoot.appendChild(sidebar);
+    const chipActions = document.createElement("div");
+    chipActions.id = "resume-pro-chip-actions";
+    chipActions.className = "resume-pro__chip-actions";
+    chipActions.hidden = true;
+    chipActions.setAttribute("role", "menu");
+    chipActions.setAttribute("aria-label", "字段填写方式");
+    chipActions.innerHTML = `
+      <button type="button" role="menuitem" data-chip-mode="add">添加</button>
+      <button type="button" role="menuitem" data-chip-mode="replace">替换</button>
+    `;
+    shadowRoot.appendChild(chipActions);
+    bindSidebarEvents(sidebar);
+  }
+
+  function bindSidebarEvents(sidebar) {
+    const header = sidebar.querySelector(".resume-pro__header");
+    const collapseButton = sidebar.querySelector(".resume-pro__collapse");
+    const templateSelect = sidebar.querySelector("#resume-pro-template-select");
+    const aiFillButton = sidebar.querySelector("#resume-pro-ai-fill");
+    const openManagerButton = sidebar.querySelector("#resume-pro-open-manager");
+    header.addEventListener("mousedown", startDrag);
+    document.addEventListener("mousemove", onDrag);
+    document.addEventListener("mouseup", stopDrag);
+
+    collapseButton.addEventListener("click", () => {
+      sidebar.classList.toggle("is-collapsed");
+      collapseButton.textContent = sidebar.classList.contains("is-collapsed") ? "+" : "−";
+    });
+
+    templateSelect.addEventListener("change", async (event) => {
+      await StorageService.setActiveTemplate(event.target.value);
+      showStatus("模板已切换。", "success");
+    });
+
+    aiFillButton.addEventListener("click", handleAiFillClick);
+    sidebar.querySelector("#resume-pro-repeat-fill").addEventListener("click", handleRepeatFillClick);
+    openManagerButton?.addEventListener("click", () => openManager());
+    sidebar.querySelector("#resume-pro-profile-offer-add")?.addEventListener("click", addUnansweredToProfile);
+    sidebar.querySelector("#resume-pro-profile-offer-skip")?.addEventListener("click", closeProfileOffer);
+
+    const chipActions = shadowRoot.querySelector("#resume-pro-chip-actions");
+    chipActions?.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    chipActions?.querySelectorAll("[data-chip-mode]").forEach((actionButton) => {
+      actionButton.addEventListener("click", () => handleChipAction(actionButton.dataset.chipMode));
+    });
+    document.addEventListener("mousedown", () => closeChipActionMenu());
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        closeChipActionMenu();
+      }
+    });
+  }
+
+  function bindStorageSync() {
+    chrome.storage.onChanged.addListener(async (changes, areaName) => {
+      if (areaName !== "local") {
+        return;
+      }
+
+      if (changes.templates || changes.activeTemplateId || changes.aiConfig || changes.profile) {
+        state.currentStore = await StorageService.getState();
+        renderSidebar();
+      }
+    });
+  }
+
+  function renderSidebar() {
+    if (!shadowRoot) {
+      return;
+    }
+
+    const templateSelect = shadowRoot.querySelector("#resume-pro-template-select");
+    const groupsContainer = shadowRoot.querySelector("#resume-pro-groups");
+    const activeTemplate = getActiveTemplate(state.currentStore);
+    const templates = state.currentStore?.templates || [];
+
+    templateSelect.innerHTML = templates.length
+      ? templates.map((template) => `
+          <option value="${escapeHtml(template.id)}" ${template.id === state.currentStore.activeTemplateId ? "selected" : ""}>
+            ${escapeHtml(template.name)}
+          </option>
+        `).join("")
+      : '<option value="">暂无模板</option>';
+
+    templateSelect.disabled = !templates.length;
+
+    const profileFields = profileResumeFields();
+
+    if (!activeTemplate && !profileFields.length) {
+      groupsContainer.innerHTML = `
+        <div class="resume-pro__empty">
+          <p>还没有简历数据。</p>
+          <button class="resume-pro__setup-button" id="resume-pro-setup-button" type="button">上传简历 / 导入模板</button>
+        </div>
+      `;
+    } else {
+      groupsContainer.innerHTML = (activeTemplate ? activeTemplate.groups : []).map((group, groupIndex) => `
+      <section class="resume-pro__group">
+        <div class="resume-pro__group-name">${escapeHtml(group.name)}</div>
+        <div class="resume-pro__chips">
+          ${group.fields.map((field, fieldIndex) => `
+            <button
+              class="resume-pro__chip"
+              type="button"
+              data-chip-id="${escapeHtml(`${activeTemplate.id}:${groupIndex}:${fieldIndex}`)}"
+              data-value="${escapeHtml(field.value)}"
+              title="${escapeHtml(field.value)}"
+            >
+              ${escapeHtml(field.key)}
+            </button>
+          `).join("")}
+        </div>
+      </section>
+    `).join("") + buildProfileChipsHtml(profileFields);
+
+      groupsContainer.querySelectorAll(".resume-pro__chip").forEach((button) => {
+        button.addEventListener("mousedown", (event) => {
+          event.preventDefault();
+        });
+        button.addEventListener("click", () => handleFieldChipClick(button));
+      });
+    }
+
+    const setupButton = groupsContainer.querySelector("#resume-pro-setup-button");
+    if (setupButton) {
+      setupButton.addEventListener("click", () => openManager());
+    }
+
+    closeChipActionMenu();
+    syncChipSelectionState();
+  }
+
+  async function handleFieldChipClick(button) {
+    const value = button.dataset.value || "";
+    const target = getLastFocusedFillTarget();
+
+    closeChipActionMenu();
+    if (!value) {
+      return;
+    }
+
+    if (!target) {
+      await copyText(value);
+      return;
+    }
+
+    if (!isComposableTextTarget(target)) {
+      await copyText(value);
+      const filled = await Promise.resolve(setElementValue(target, value));
+      if (filled) {
+        target.focus?.();
+        state.lastFocusedField = target;
+      }
+      return;
+    }
+
+    const selection = captureTextSelection(target);
+    const currentValue = getComposableTargetValue(target);
+    syncChipSelectionState();
+    if (button.classList.contains("is-in-field")) {
+      await applyChipValue(target, value, "remove", selection, button.dataset.chipId);
+      return;
+    }
+
+    if (!currentValue) {
+      await copyText(value);
+      await applyChipValue(target, value, "add", selection, button.dataset.chipId);
+      return;
+    }
+
+    showChipActionMenu(button, target, value, selection);
+  }
+
+  async function handleChipAction(mode) {
+    const action = state.chipAction;
+    closeChipActionMenu();
+    if (!action || !["add", "replace"].includes(mode)) {
+      return;
+    }
+
+    await copyText(action.value);
+    const filled = await applyChipValue(action.target, action.value, mode, action.selection, action.button.dataset.chipId);
+    if (!filled) {
+      return;
+    }
+  }
+
+  function showChipActionMenu(button, target, value, selection) {
+    const menu = shadowRoot?.querySelector("#resume-pro-chip-actions");
+    if (!menu) {
+      return;
+    }
+
+    state.chipAction = { button, target, value, selection };
+    menu.hidden = false;
+    const buttonRect = button.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(buttonRect.left, window.innerWidth - menuRect.width - 8));
+    const fitsBelow = buttonRect.bottom + menuRect.height + 8 <= window.innerHeight;
+    const top = fitsBelow ? buttonRect.bottom + 6 : Math.max(8, buttonRect.top - menuRect.height - 6);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  function closeChipActionMenu() {
+    const menu = shadowRoot?.querySelector?.("#resume-pro-chip-actions");
+    if (menu) {
+      menu.hidden = true;
+    }
+    state.chipAction = null;
+  }
+
+  function captureTextSelection(target) {
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      const fallback = target.value.length;
+      return {
+        start: Number.isInteger(target.selectionStart) ? target.selectionStart : fallback,
+        end: Number.isInteger(target.selectionEnd) ? target.selectionEnd : fallback
+      };
+    }
+
+    const selection = window.getSelection?.();
+    if (!selection?.rangeCount) {
+      const fallback = target.textContent?.length || 0;
+      return { start: fallback, end: fallback };
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!target.contains(range.commonAncestorContainer)) {
+      const fallback = target.textContent?.length || 0;
+      return { start: fallback, end: fallback };
+    }
+
+    const beforeStart = range.cloneRange();
+    beforeStart.selectNodeContents(target);
+    beforeStart.setEnd(range.startContainer, range.startOffset);
+    const beforeEnd = range.cloneRange();
+    beforeEnd.selectNodeContents(target);
+    beforeEnd.setEnd(range.endContainer, range.endOffset);
+    return { start: beforeStart.toString().length, end: beforeEnd.toString().length };
+  }
+
+  function composeChipText(currentValue, chipValue, mode, selection = {}) {
+    const current = String(currentValue || "");
+    const chip = String(chipValue || "");
+    const rawStart = Number.isInteger(selection.start) ? selection.start : current.length;
+    const start = Math.min(Math.max(0, rawStart), current.length);
+
+    if (!chip) {
+      return { value: current, caret: start, changed: false };
+    }
+
+    if (mode === "replace") {
+      return { value: chip, caret: chip.length, changed: current !== chip };
+    }
+
+    if (mode === "remove") {
+      const index = findNearestChipOccurrence(current, chip, start);
+      if (index < 0) {
+        return { value: current, caret: start, changed: false };
+      }
+      return {
+        value: current.slice(0, index) + current.slice(index + chip.length),
+        caret: index,
+        changed: true
+      };
+    }
+
+    return {
+      value: current.slice(0, start) + chip + current.slice(start),
+      caret: start + chip.length,
+      changed: true
+    };
+  }
+
+  function findNearestChipOccurrence(current, chip, caret) {
+    let nearestIndex = -1;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    let index = current.indexOf(chip);
+    while (index >= 0) {
+      const distance = caret < index ? index - caret : caret > index + chip.length ? caret - (index + chip.length) : 0;
+      if (distance < nearestDistance) {
+        nearestIndex = index;
+        nearestDistance = distance;
+      }
+      index = current.indexOf(chip, index + Math.max(1, chip.length));
+    }
+    return nearestIndex;
+  }
+
+  async function applyChipValue(target, chipValue, mode, selection, chipId = "") {
+    if (!isComposableTextTarget(target) || !document.contains(target)) {
+      return false;
+    }
+
+    const composed = composeChipText(getComposableTargetValue(target), chipValue, mode, selection);
+    if (!composed.changed) {
+      if (mode === "replace" && chipId) {
+        updateTrackedChipSelection(target, chipId, mode);
+        syncChipSelectionState();
+        return true;
+      }
+      return false;
+    }
+
+    const hadTrackedSelection = chipSelectionIdsByTarget.has(target);
+    const previousSelection = new Set(chipSelectionIdsByTarget.get(target) || []);
+    updateTrackedChipSelection(target, chipId, mode);
+    chipWriteTargets.add(target);
+    let filled;
+    try {
+      filled = await Promise.resolve(setElementValue(target, composed.value));
+    } finally {
+      chipWriteTargets.delete(target);
+    }
+    if (!filled) {
+      if (chipId) {
+        if (hadTrackedSelection) {
+          chipSelectionIdsByTarget.set(target, previousSelection);
+        } else {
+          chipSelectionIdsByTarget.delete(target);
+        }
+      }
+      return false;
+    }
+
+    target.focus?.();
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      target.setSelectionRange?.(composed.caret, composed.caret);
+    } else {
+      setContentEditableCaret(target, composed.caret);
+    }
+    state.lastFocusedField = target;
+    syncChipSelectionState();
+    return true;
+  }
+
+  function getComposableTargetValue(target) {
+    return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+      ? String(target.value || "")
+      : String(target.textContent || "");
+  }
+
+  function setContentEditableCaret(target, caret) {
+    const selection = window.getSelection?.();
+    const range = document.createRange?.();
+    if (!selection || !range) {
+      return;
+    }
+    const textNode = target.firstChild || target;
+    const offset = textNode === target ? 0 : Math.min(caret, textNode.textContent?.length || 0);
+    range.setStart(textNode, offset);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function isComposableTextTarget(target) {
+    if (target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) {
+      return true;
+    }
+    return target instanceof HTMLInputElement && ["text", "search", "tel", "url", "email", "password"].includes(target.type || "text");
+  }
+
+  function syncChipSelectionState() {
+    if (!shadowRoot?.querySelectorAll) {
+      return;
+    }
+    const target = getLastFocusedFillTarget();
+    const currentValue = target && isComposableTextTarget(target) ? getComposableTargetValue(target) : "";
+    const buttons = Array.from(shadowRoot.querySelectorAll(".resume-pro__chip"));
+    const selectedIds = target && isComposableTextTarget(target)
+      ? resolveSelectedChipIds(target, buttons, currentValue)
+      : new Set();
+    buttons.forEach((button) => {
+      const selected = selectedIds.has(button.dataset.chipId);
+      button.classList.toggle("is-in-field", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+  }
+
+  function updateTrackedChipSelection(target, chipId, mode) {
+    if (!chipId) {
+      return;
+    }
+    const selectedIds = new Set(chipSelectionIdsByTarget.get(target) || []);
+    if (mode === "replace") {
+      selectedIds.clear();
+    }
+    if (mode === "remove") {
+      selectedIds.delete(chipId);
+    } else {
+      selectedIds.add(chipId);
+    }
+    chipSelectionIdsByTarget.set(target, selectedIds);
+  }
+
+  function resolveSelectedChipIds(target, buttons, currentValue) {
+    const hasTrackedSelection = chipSelectionIdsByTarget.has(target);
+    const previousIds = chipSelectionIdsByTarget.get(target) || new Set();
+    const nextIds = new Set();
+    const buttonsByValue = new Map();
+
+    buttons.forEach((button, index) => {
+      if (!button.dataset.chipId) {
+        button.dataset.chipId = `rendered-chip-${index}`;
+      }
+      const value = button.dataset.value || "";
+      if (!value) {
+        return;
+      }
+      if (!buttonsByValue.has(value)) {
+        buttonsByValue.set(value, []);
+      }
+      buttonsByValue.get(value).push(button);
+    });
+
+    buttonsByValue.forEach((sameValueButtons, value) => {
+      let remaining = countTextOccurrences(currentValue, value);
+      const preferred = sameValueButtons.filter((button) => previousIds.has(button.dataset.chipId));
+      const candidates = hasTrackedSelection
+        ? preferred
+        : sameValueButtons;
+      candidates.forEach((button) => {
+        if (remaining > 0) {
+          nextIds.add(button.dataset.chipId);
+          remaining -= 1;
+        }
+      });
+    });
+
+    chipSelectionIdsByTarget.set(target, nextIds);
+    return nextIds;
+  }
+
+  function countTextOccurrences(text, value) {
+    if (!value) {
+      return 0;
+    }
+    let count = 0;
+    let index = String(text || "").indexOf(value);
+    while (index >= 0) {
+      count += 1;
+      index = String(text || "").indexOf(value, index + value.length);
+    }
+    return count;
+  }
+
+  function newRequestId() {
+    return crypto.randomUUID ? crypto.randomUUID() : Array.from(crypto.getRandomValues(new Uint32Array(4)), n => n.toString(16)).join("-");
+  }
+
+  async function handleRepeatFillClick(event) {
+    const button = event.currentTarget;
+    const fillButton = shadowRoot.querySelector("#resume-pro-ai-fill");
+    if (button.disabled || fillButton.disabled) return;
+    const template = getActiveTemplate(state.currentStore);
+    const config = state.currentStore?.aiConfig;
+    if (!template || !config?.apiKey || !config?.apiUrl || !config?.model) {
+      showStatus("请先准备简历模板和 AI 接口。", "error");
+      return;
+    }
+    const agent = self.ResumeProFormAgent;
+    const snapshot = agent.collect(document, flattenTemplateFields(template));
+    if (!snapshot.candidates.length) {
+      showStatus("未识别到可安全新增的分组，请先手动新增条目，再一键填写。", "error");
+      return;
+    }
+    button.disabled = true;
+    fillButton.disabled = true;
+    const cancel = shadowRoot.querySelector("#resume-pro-cancel-fill");
+    const hint = shadowRoot.querySelector("#resume-pro-wait-hint");
+    const requestId = newRequestId();
+    let stopped = false;
+    let planning = true;
+    let expanded;
+    cancel.hidden = false;
+    cancel.disabled = false;
+    cancel.textContent = "停止辅助新增";
+    cancel.onclick = () => {
+      stopped = true;
+      cancel.disabled = true;
+      if (planning) self.ResumeProAIClient.cancel(requestId).catch(() => {});
+    };
+    const start = performance.now();
+    const progress = () => {
+      const seconds = Math.floor((performance.now() - start) / 1000);
+      button.textContent = `AI 规划中... ${seconds}s`;
+      if (seconds >= 90) {
+        hint.hidden = false;
+        hint.textContent = "正在等待 AI 规划，上游模型、中转或网络可能较慢；不会自动取消，可手动停止。";
+      }
+    };
+    progress();
+    const timer = window.setInterval(progress, 1000);
+    try {
+      const reply = await self.ResumeProAIClient.send({ type: "AI_PLAN_REPEAT", requestId, aiConfig: config, candidates: snapshot.candidates });
+      planning = false;
+      window.clearInterval(timer);
+      if (stopped) throw new Error("已停止，未执行新增。");
+      if (!reply?.success) throw new Error("AI 规划失败，未执行新增。可稍后重试或手动新增。");
+      const plan = agent.validatePlan(reply.plan, snapshot.candidates);
+      if (!plan.length) throw new Error("AI 未给出可确认的新增操作，请手动处理。");
+      const preview = plan.map(action => `${snapshot.candidates.find(c => c.id === action.id).label}：${action.count} 条`).join("\n");
+      if (!window.confirm(`允许以下操作吗？\n${preview}\n\n确认后将点击网页新增按钮，再用 AI 填写这些分组的空字段。不会提交、删除或覆盖已有内容。网页自身可能保存新条目；停止后不自动删除。`)) return;
+      if (getActiveTemplate(state.currentStore) !== template) throw new Error("当前模板已变化，请重新预览。");
+      button.textContent = "正在新增并检查网页...";
+      hint.hidden = true;
+      expanded = await agent.execute(plan, snapshot, () => stopped || getActiveTemplate(state.currentStore) !== template);
+    } catch (error) {
+      showStatus(error.message || "辅助新增失败，请手动核对网页。", "error");
+    } finally {
+      window.clearInterval(timer);
+      cancel.hidden = true;
+      cancel.onclick = null;
+      cancel.textContent = "取消 AI 等待（保留本地匹配）";
+      hint.hidden = true;
+      button.disabled = false;
+      fillButton.disabled = false;
+      button.textContent = "AI 辅助新增条目（先预览）";
+    }
+    if (expanded && !stopped && getActiveTemplate(state.currentStore) === template) await handleAiFillClick({ currentTarget: fillButton }, { scopes: expanded.scopes });
+  }
+
+  function isAssistedTextField(entry) {
+    const el = entry.element;
+    return !el.disabled && !el.readOnly && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && ["text", "email", "tel", "url", "search"].includes(el.type)));
+  }
+
+  function hasExistingValue(entry) {
+    if (entry.kind === "radio") return entry.elements.some(el => el.checked);
+    const el = entry.element;
+    if (!el?.isConnected) return true;
+    if (el.type === "checkbox" || el.type === "radio") return el.checked;
+    return Boolean(String(el.value ?? el.textContent ?? "").trim());
+  }
+
+  async function handleAiFillClick(event, assisted = null) {
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const activeTemplate = getActiveTemplate(state.currentStore);
+    const aiConfig = state.currentStore?.aiConfig;
+
+    const profileFields = profileResumeFields();
+
+    if (!activeTemplate && !profileFields.length) {
+      showStatus("请先导入简历模板，或在「我的信息」里填写内容。", "error");
+      return;
+    }
+
+    if (!aiConfig?.apiUrl || !aiConfig?.model || !aiConfig?.apiKey) {
+      showStatus("请先在插件中配置 AI 接口。", "error");
+      return;
+    }
+
+    button.disabled = true;
+    const repeatButton = shadowRoot?.querySelector("#resume-pro-repeat-fill");
+    if (repeatButton) repeatButton.disabled = true;
+    button.textContent = "正在扫描网页...";
+    const totalStart = performance.now();
+    const timing = { scanMs: null, roundTripMs: null, fillMs: null };
+    let phaseStart = totalStart;
+    let phase = "scanMs";
+    let timer = null;
+    let diagnostics = {};
+    let fieldCount = 0;
+    let filledCount = 0;
+    let unconfirmedCount = 0;
+    const unfilledLabels = [];
+    let outcome = "failed";
+    const requestId = newRequestId();
+    const cancelButton = shadowRoot?.querySelector("#resume-pro-cancel-fill");
+    const waitHint = shadowRoot?.querySelector("#resume-pro-wait-hint");
+    let cancelRequested = false;
+
+    try {
+      const scanned = scanFillableFields();
+      const fieldMap = scanned.fieldMap;
+      const fields = assisted ? scanned.fields.filter(field => {
+        const entry = fieldMap.get(field.fieldId);
+        return entry?.kind === "element" && isAssistedTextField(entry) && assisted.scopes.some(scope => scope.contains(entry.element)) && !hasExistingValue(entry);
+      }) : scanned.fields;
+      fieldCount = fields.length;
+      timing.scanMs = performance.now() - phaseStart;
+      phase = null;
+      if (!fields.length) throw new Error("当前页面没有可填写的表单字段。");
+      if (!assisted) closeProfileOffer();
+      // 模板字段在前并且优先；「我的信息」只补模板里没有的字段名。
+      const templateFields = activeTemplate ? flattenTemplateFields(activeTemplate) : [];
+      const resumeFields = self.ResumeProProfile
+        ? self.ResumeProProfile.mergeResumeFields(templateFields, profileFields)
+        : templateFields;
+      phase = "roundTripMs";
+      phaseStart = performance.now();
+      if (cancelButton) {
+        cancelButton.hidden = false;
+        cancelButton.disabled = false;
+        cancelButton.onclick = async () => {
+          if (phase !== "roundTripMs") return;
+          cancelButton.disabled = true;
+          try {
+            const reply = await self.ResumeProAIClient.cancel(requestId);
+            if (reply?.cancelled) cancelRequested = true;
+            if (waitHint && phase === "roundTripMs") {
+              waitHint.hidden = false;
+              waitHint.textContent = reply?.cancelled ? "正在取消 AI 等待，保留本地匹配结果。" : "请求已结束或无法取消，正在等待结果。";
+            }
+          } catch {
+            if (phase === "roundTripMs") {
+              cancelButton.disabled = false;
+              if (waitHint) {
+                waitHint.hidden = false;
+                waitHint.textContent = "取消请求未送达，请重试；当前请求可能仍在等待。";
+              }
+            }
+          }
+        };
+      }
+      const updateProgress = () => {
+        const seconds = Math.floor((performance.now() - phaseStart) / 1000);
+        button.textContent = `AI 匹配中... ${seconds}s`;
+        if (seconds >= 90 && waitHint && !cancelRequested) {
+          waitHint.hidden = false;
+          waitHint.textContent = "AI 匹配尚未返回，等待通常与上游模型处理、中转服务或网络有关，输入量也会影响耗时。插件不会因等待较久自动取消；你可以继续等待或手动取消。";
+        }
+      };
+      updateProgress();
+      timer = window.setInterval(updateProgress, 1000);
+      const response = await self.ResumeProAIClient.send({
+        type: "AI_FILL",
+        requestId,
+        formFields: fields,
+        resumeFields,
+        aiConfig
+      });
+      timing.roundTripMs = performance.now() - phaseStart;
+      phase = null;
+      window.clearInterval(timer);
+      timer = null;
+      if (cancelButton) cancelButton.hidden = true;
+      if (waitHint) waitHint.hidden = true;
+      diagnostics = response?.diagnostics || {};
+
+      if (!response?.success) {
+        throw new Error(response?.error || "AI 填写失败。");
+      }
+
+      button.textContent = "正在填写网页...";
+      phase = "fillMs";
+      phaseStart = performance.now();
+
+      const fieldMetaMap = new Map(fields.map((f) => [f.fieldId, f]));
+      const domOrderMap = new Map(fields.map((field, index) => [field.fieldId, index]));
+      const sortedMatches = [...response.matches].sort((a, b) => {
+        const ma = fieldMetaMap.get(a.fieldId);
+        const mb = fieldMetaMap.get(b.fieldId);
+        if (ma?.cascadeGroup !== undefined && ma.cascadeGroup === mb?.cascadeGroup) {
+          return (ma.cascadeLevel ?? 0) - (mb.cascadeLevel ?? 0);
+        }
+        // 其余按页面顺序从上往下填：没被识别成联动组的省/市/县也能等上一级先选好。
+        return (domOrderMap.get(a.fieldId) ?? 0) - (domOrderMap.get(b.fieldId) ?? 0);
+      });
+
+      for (const match of sortedMatches) {
+        if (assisted && getActiveTemplate(state.currentStore) !== activeTemplate) throw new Error("模板已变化，已停止辅助填写，请核对网页。");
+        const element = fieldMap.get(match.fieldId);
+
+        if (!element) continue;
+        if (assisted && (!isAssistedTextField(element) || hasExistingValue(element) || !assisted.scopes.some(scope => scope.isConnected && scope.contains(element.element)))) continue;
+
+        let filled = setElementValue(element, match.value);
+        if (filled instanceof Promise) {
+          filled = await filled;
+        }
+        if (assisted && filled) {
+          await new Promise(resolve => window.setTimeout(resolve, 50));
+          filled = element.element.isConnected && element.element.value === match.value;
+        }
+
+        const fieldMeta = fieldMetaMap.get(match.fieldId);
+
+        // 联动下拉的选项是上一级选完才异步加载的。没被识别成联动组、但除了「请选择」还没有选项的下拉框
+        // 也按同样的方式等一等（和 worker 放行它用的是同一个判断）；选项出来了却对不上，不再白等。
+        if (!filled && element.kind === "element" && element.element instanceof HTMLSelectElement
+          && (fieldMeta?.cascadeGroup !== undefined || !hasRealSelectOptions(element.element))) {
+          for (let retry = 0; retry < 3; retry++) {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            filled = setElementValue(element, match.value);
+            if (filled || (fieldMeta?.cascadeGroup === undefined && hasRealSelectOptions(element.element))) break;
+          }
+        }
+
+        if (filled) {
+          filledCount += 1;
+          highlightFilledField(element, match.value);
+        } else if (assisted) {
+          unconfirmedCount += 1;
+        } else {
+          unfilledLabels.push(fieldMeta?.label || fieldMeta?.placeholder || fieldMeta?.name || "未命名字段");
+        }
+
+        if (filled && fieldMeta?.cascadeGroup !== undefined) {
+          const groupFields = fields.filter((f) => f.cascadeGroup === fieldMeta.cascadeGroup);
+          const maxLevelInGroup = Math.max(...groupFields.map((f) => f.cascadeLevel));
+
+          if (fieldMeta.cascadeLevel < maxLevelInGroup) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+        }
+      }
+
+      outcome = response.warning || unconfirmedCount || unfilledLabels.length ? "partial" : "success";
+      const unfilledNote = unfilledLabels.length
+        ? `${unfilledLabels.length} 项没填上：${summarizeLabels(unfilledLabels)}，请手动补上。`
+        : "";
+      if (assisted) {
+        showStatus(`辅助填写：已验证 ${filledCount} 项。${unconfirmedCount ? `${unconfirmedCount} 项未确认，请核对网页。` : ""}${response.warning || ""}`, outcome === "partial" ? "error" : "success");
+      } else if (response.warning) {
+        showStatus(`本地已填写 ${filledCount} 项；${unfilledNote}${response.warning}`, "error", Boolean(unfilledNote));
+      } else if (unfilledNote) {
+        // 没填上的字段要用户自己去补，提示不自动消失。
+        showStatus(`已填写 ${filledCount} 个字段。${unfilledNote}`, "error", true);
+      } else {
+        showStatus(`已填写 ${filledCount} 个字段。`, "success");
+      }
+
+      if (!assisted) {
+        const matchedIds = new Set(response.matches.map((match) => match.fieldId));
+        offerUnansweredFields(fields.map((field) => ({
+          label: field.label || field.placeholder || field.name,
+          inputType: field.inputType,
+          matched: matchedIds.has(field.fieldId),
+          hasValue: hasExistingValue(fieldMap.get(field.fieldId)),
+          entry: fieldMap.get(field.fieldId)
+        })), resumeFields);
+      }
+    } catch (error) {
+      showStatus(error.message || "AI 填写失败。", "error");
+    } finally {
+      if (cancelButton) {
+        cancelButton.hidden = true;
+        cancelButton.onclick = null;
+      }
+      if (waitHint) waitHint.hidden = true;
+      if (timer !== null) window.clearInterval(timer);
+      if (phase) timing[phase] = performance.now() - phaseStart;
+      const totalMs = performance.now() - totalStart;
+      const summary = formatFillDiagnostics({ ...timing, totalMs,
+        fieldCount, filledCount, unfilledCount: unfilledLabels.length, outcome, diagnostics });
+      const panel = shadowRoot?.querySelector("#resume-pro-diagnostics");
+      const text = shadowRoot?.querySelector("#resume-pro-diagnostics-text");
+      if (panel && text) {
+        text.value = summary;
+        panel.hidden = false;
+        panel.open = true;
+      }
+      button.disabled = false;
+      if (repeatButton) repeatButton.disabled = false;
+      button.textContent = "一键 AI 填写";
+    }
+  }
+
+  function summarizeLabels(labels, limit = 5) {
+    const unique = [...new Set(labels.map((label) => String(label ?? "").trim()).filter(Boolean))];
+    const shown = unique.slice(0, limit).join("、");
+    return unique.length > limit ? `${shown} 等` : shown;
+  }
+
+  function formatFillDiagnostics(result) {
+    const seconds = (value) => typeof value === "number" && Number.isFinite(value) ? `${(value / 1000).toFixed(2)} s` : "未执行 / 未取得";
+    const count = (value) => Number.isInteger(value) && value >= 0 ? value : "未取得";
+    const d = result.diagnostics;
+    // Explicit allowlist: never copy provider messages, URL, keys or field values.
+    const code = /^(none|cancelled|network|format|http_\d{3})$/.test(d.errorCode) ? d.errorCode : "unknown";
+    return [
+      `网申助手 v${chrome.runtime.getManifest().version}`,
+      `结果：${({ success: "完成", partial: "部分完成", failed: "失败" })[result.outcome] || "未知"}；错误类别：${code}`,
+      `网页字段：${count(result.fieldCount)}；成功填写：${count(result.filledCount)}；没填上：${count(result.unfilledCount)}`,
+      `本地匹配：${count(d.ruleMatches)}；AI 匹配：${count(d.aiMatches)}`,
+      `送 AI 字段：${count(d.aiFields)}`,
+      `候选 / 简历字段：${count(d.candidateFields)} / ${count(d.resumeFields)}`,
+      `用户 prompt：${count(d.promptBytes)} bytes`,
+      `扫描：${seconds(result.scanMs)}`,
+      `匹配往返（含后台处理）：${seconds(result.roundTripMs)}`,
+      `API（含响应读取）：${seconds(d.apiMs)}`,
+      `填写：${seconds(result.fillMs)}；总计：${seconds(result.totalMs)}`
+    ].join("\n");
+  }
+
+  function scanFillableFields() {
+    const candidates = Array.from(document.querySelectorAll(
+      "input:not([type='hidden']):not([type='file']):not([type='button']):not([type='submit']):not([type='reset']):not([disabled]), textarea:not([disabled]), select:not([disabled])"
+    )).filter((element) => isVisible(element) && !element.closest(`#${SIDEBAR_ID}`));
+
+    const fieldMap = new Map();
+    const fields = [];
+    const radioGroups = new Set();
+
+    candidates.forEach((element, index) => {
+      if (element instanceof HTMLInputElement && element.type === "radio") {
+        const groupName = element.name || `__radio__${index}`;
+
+        if (radioGroups.has(groupName)) {
+          return;
+        }
+
+        radioGroups.add(groupName);
+        const radioElements = candidates.filter((candidate) => candidate instanceof HTMLInputElement && candidate.type === "radio" && (candidate.name || `__radio__${index}`) === groupName);
+        const fieldId = `field-radio-${fields.length}`;
+        fieldMap.set(fieldId, { kind: "radio", elements: radioElements });
+        fields.push({
+          fieldId,
+          label: getFieldLabel(element),
+          placeholder: "",
+          name: groupName,
+          idAttr: "",
+          ariaLabel: element.getAttribute("aria-label") || "",
+          tagName: "input",
+          inputType: "radio",
+          options: radioElements.map((radio) => getRadioOptionLabel(radio)).filter(Boolean),
+          group: findNearestGroupLabel(element)
+        });
+        return;
+      }
+
+      const fieldId = `field-${fields.length}`;
+      fieldMap.set(fieldId, { kind: "element", element });
+      fields.push({
+        fieldId,
+        label: getFieldLabel(element),
+        placeholder: element.getAttribute("placeholder") || "",
+        name: element.getAttribute("name") || "",
+        idAttr: element.id || "",
+        ariaLabel: element.getAttribute("aria-label") || "",
+        tagName: element.tagName.toLowerCase(),
+        inputType: element instanceof HTMLInputElement ? element.type || "text" : element.tagName.toLowerCase(),
+        options: element instanceof HTMLSelectElement
+          ? Array.from(element.options).map((option) => option.text.trim()).filter(Boolean)
+          : [],
+        group: findNearestGroupLabel(element)
+      });
+    });
+
+    const pickerSelectors = [
+      { selector: ".ant-picker", pickerType: "antd" },
+      { selector: ".el-date-editor", pickerType: "element" },
+      { selector: "[class*='date-picker']", pickerType: "generic" }
+    ];
+
+    pickerSelectors.forEach(({ selector, pickerType }) => {
+      document.querySelectorAll(selector).forEach((container) => {
+        if (container.closest(`#${SIDEBAR_ID}`)) return;
+        if (!isVisible(container)) return;
+
+        Array.from(container.querySelectorAll("input:not([type='hidden']):not([disabled])"))
+          .filter((inner) => isVisible(inner))
+          .forEach((inner) => {
+          const pickerInputType = inferPickerInputType(container, inner);
+
+          const existingEntry = Array.from(fieldMap.entries()).find(([, v]) => v.element === inner);
+          if (existingEntry) {
+            const [existingId, entryValue] = existingEntry;
+            entryValue.pickerType = pickerType;
+            entryValue.pickerInputType = pickerInputType;
+            const existingField = fields.find((f) => f.fieldId === existingId);
+            if (existingField) {
+              existingField.inputType = "date-picker";
+              existingField.pickerType = pickerType;
+              existingField.pickerInputType = pickerInputType;
+            }
+            return;
+          }
+
+          const fieldId = `field-${fields.length}`;
+          fieldMap.set(fieldId, { kind: "element", element: inner, pickerType, pickerInputType });
+          fields.push({
+            fieldId,
+            label: getFieldLabel(inner),
+            placeholder: inner.getAttribute("placeholder") || "",
+            name: inner.getAttribute("name") || "",
+            idAttr: inner.id || "",
+            ariaLabel: inner.getAttribute("aria-label") || "",
+            tagName: "input",
+            inputType: "date-picker",
+            pickerType,
+            pickerInputType,
+            options: [],
+            group: findNearestGroupLabel(inner)
+          });
+        });
+      });
+    });
+
+    // 级联判断 (Cascade Detection)
+    if (self.ResumeProAIHelpers?.detectCascadeGroups) {
+      self.ResumeProAIHelpers.detectCascadeGroups(fields, fieldMap);
+    }
+
+    return { fields, fieldMap };
+  }
+
+  function getFieldLabel(element) {
+    const cleanedElementLabel = sanitizeLabelText(element.getAttribute("data-label"));
+    if (cleanedElementLabel) return cleanedElementLabel;
+
+    // 1. 标准 label 关联
+    if (element.labels?.length) {
+      const labelText = sanitizeLabelText(Array.from(element.labels).map((label) => label.textContent?.trim() || "").join(" / "));
+      if (labelText) return labelText;
+    }
+
+    // 2. label[for] 关联
+    if (element.id) {
+      const linked = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
+      const linkedText = sanitizeLabelText(linked?.textContent);
+      if (linkedText) return linkedText;
+    }
+
+    // 3. 包裹在 label 里
+    const wrappingLabel = element.closest("label");
+    const wrappingText = sanitizeLabelText(wrappingLabel?.textContent);
+    if (wrappingText) return wrappingText;
+
+    // 4. aria-labelledby
+    const labelledBy = element.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const text = sanitizeLabelText(labelledBy.split(" ").map(id => document.getElementById(id)?.textContent?.trim()).filter(Boolean).join(" "));
+      if (text) return text;
+    }
+
+    // 5. 同一行的前一个兄弟元素文本（td/th/span/div/p）
+    let sibling = element.previousElementSibling;
+    while (sibling) {
+      const text = sanitizeLabelText(sibling.textContent);
+      if (text && text.length < 30) return text;
+      sibling = sibling.previousElementSibling;
+    }
+
+    // 6. 父容器内、input 之前的文本节点或标签元素（常见于 td 布局）
+    const parent = element.parentElement;
+    if (parent) {
+      // 找父容器的前一个兄弟（如 th/td）
+      let parentSibling = parent.previousElementSibling;
+      while (parentSibling) {
+        const text = sanitizeLabelText(parentSibling.textContent);
+        if (text && text.length < 30) return text;
+        parentSibling = parentSibling.previousElementSibling;
+      }
+
+      // 父容器本身的直接文本（排除 input 本身的内容）
+      const clone = parent.cloneNode(true);
+      clone.querySelectorAll("input, select, textarea, button").forEach(el => el.remove());
+      const text = sanitizeLabelText(clone.textContent);
+      if (text && text.length < 30) return text;
+    }
+
+    // 7. 向上追溯祖先容器的前序单元格/标签，适配表格或复杂布局
+    let current = parent;
+    let depth = 0;
+    while (current && depth < 5) {
+      let previous = current.previousElementSibling;
+      while (previous) {
+        const text = sanitizeLabelText(previous.textContent);
+        if (text && text.length < 40) return text;
+        previous = previous.previousElementSibling;
+      }
+
+      const scopedLabel = current.querySelector("label, th, .label, .form-label, .ant-form-item-label");
+      const scopedText = sanitizeLabelText(scopedLabel?.textContent);
+      if (scopedText && scopedText.length < 40) return scopedText;
+
+      current = current.parentElement;
+      depth += 1;
+    }
+
+    // 8. placeholder 兜底
+    return element.getAttribute("placeholder")?.trim() || "";
+  }
+
+  function bindFocusTracking() {
+    document.addEventListener("focusin", (event) => {
+      const target = event.target;
+
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      if (target.closest(`#${SIDEBAR_ID}`)) {
+        return;
+      }
+
+      if (isFillTarget(target)) {
+        state.lastFocusedField = target;
+        closeChipActionMenu();
+        syncChipSelectionState();
+      }
+    }, true);
+    document.addEventListener("input", (event) => {
+      if (event.target === state.lastFocusedField) {
+        closeChipActionMenu();
+        if (!chipWriteTargets.has(event.target)) {
+          chipSelectionIdsByTarget.delete(event.target);
+        }
+        syncChipSelectionState();
+      }
+    }, true);
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      const helper = document.createElement("textarea");
+      helper.value = text;
+      helper.setAttribute("readonly", "readonly");
+      helper.style.position = "fixed";
+      helper.style.opacity = "0";
+      document.body.appendChild(helper);
+      helper.select();
+      const success = document.execCommand("copy");
+      helper.remove();
+      return success;
+    }
+  }
+
+  function getLastFocusedFillTarget() {
+    const candidates = [state.lastFocusedField, document.activeElement];
+
+    for (const candidate of candidates) {
+      if (candidate instanceof HTMLElement && isFillTarget(candidate) && document.contains(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  function hasRealSelectOptions(select) {
+    const isPlaceholder = self.ResumeProAIHelpers?.isPlaceholderOption;
+    return Array.from(select.options || []).some((option) => String(option.text ?? "").trim()
+      && !(isPlaceholder && isPlaceholder({ value: option.value, text: option.text, disabled: option.disabled })));
+  }
+
+  function setElementValue(element, value) {
+    if (element && typeof element === "object" && element.kind === "radio") {
+      const radioOptions = element.elements.map((radio) => ({ value: radio.value, text: getRadioOptionLabel(radio), disabled: radio.disabled }));
+      const radioIndex = self.ResumeProAIHelpers?.findSelectOptionIndex?.(radioOptions, value) ?? -1;
+      const matchedRadio = radioIndex >= 0 ? element.elements[radioIndex] : null;
+
+      if (!matchedRadio) {
+        return false;
+      }
+
+      matchedRadio.checked = true;
+      matchedRadio.dispatchEvent(new Event("input", { bubbles: true }));
+      matchedRadio.dispatchEvent(new Event("change", { bubbles: true }));
+      matchedRadio.click();
+      return true;
+    }
+
+    const pickerType = (element && typeof element === "object" && element.kind === "element") ? element.pickerType : null;
+    const pickerInputType = (element && typeof element === "object" && element.kind === "element") ? (element.pickerInputType || "date") : "date";
+
+    if (element && typeof element === "object" && element.kind === "element") {
+      element = element.element;
+    }
+
+    if (element instanceof HTMLInputElement && ["date", "month", "datetime-local", "time"].includes(element.type)) {
+      const normalized = self.ResumeProAIHelpers?.normalizeDateValue?.(value, element.type) ?? value;
+      const descriptor = Object.getOwnPropertyDescriptor(element.constructor.prototype, "value");
+      element.dispatchEvent(new FocusEvent("focus", { bubbles: true }));
+      if (descriptor?.set) {
+        descriptor.set.call(element, normalized);
+      } else {
+        element.value = normalized;
+      }
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+      return element.value === normalized;
+    }
+
+    if (element instanceof HTMLInputElement && (pickerType === "antd" || pickerType === "element" || pickerType === "generic")) {
+      const normalized = self.ResumeProAIHelpers?.normalizeDateValue?.(value, pickerInputType) ?? value;
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      return new Promise((resolve) => {
+        window.setTimeout(() => {
+          try {
+            const descriptor = Object.getOwnPropertyDescriptor(element.constructor.prototype, "value");
+            if (descriptor?.set) {
+              descriptor.set.call(element, normalized);
+            } else {
+              element.value = normalized;
+            }
+            element.dispatchEvent(new Event("input", { bubbles: true }));
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+            element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+          } catch (_) {
+            resolve(false);
+            return;
+          }
+          resolve(element.value === normalized);
+        }, 150);
+      });
+    }
+
+    if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+      const descriptor = Object.getOwnPropertyDescriptor(element.constructor.prototype, "value");
+      if (descriptor?.set) {
+        descriptor.set.call(element, value);
+      } else {
+        element.value = value;
+      }
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }
+
+    if (element instanceof HTMLSelectElement) {
+      const selectOptions = Array.from(element.options).map((option) => ({ value: option.value, text: option.text, disabled: option.disabled }));
+      const optionIndex = self.ResumeProAIHelpers?.findSelectOptionIndex?.(selectOptions, value) ?? -1;
+      const matchedOption = optionIndex >= 0 ? element.options[optionIndex] : null;
+
+      if (!matchedOption) {
+        return false;
+      }
+
+      // 走原型上的 setter：有些框架在实例上拦了 value，直接赋值会被吞掉。
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+      if (descriptor?.set) {
+        descriptor.set.call(element, matchedOption.value);
+      } else {
+        element.value = matchedOption.value;
+      }
+      // 几个选项 value 相同时（常见的是一串空值），按 value 赋值会落到第一个，按下标补一次。
+      if (element.selectedIndex !== optionIndex) {
+        element.selectedIndex = optionIndex;
+      }
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      return element.selectedIndex === optionIndex;
+    }
+
+    if (element instanceof HTMLElement && element.isContentEditable) {
+      element.textContent = value;
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    }
+
+    return false;
+  }
+
+  function highlightFilledField(fieldEntry, value) {
+    getHighlightTargets(fieldEntry, value).forEach((target) => {
+      if (!(target instanceof HTMLElement)) {
+        return;
+      }
+
+      if (!isInViewport(target)) {
+        target.scrollIntoView({ block: "center", behavior: "smooth" });
+        queueFieldHighlightWhenVisible(target);
+        return;
+      }
+
+      applyFieldHighlight(target);
+    });
+  }
+
+  function queueFieldHighlightWhenVisible(target, attempt = 0) {
+    clearFieldHighlightTimer(target);
+    const timer = window.setTimeout(() => {
+      if (isInViewport(target) || attempt >= 18) {
+        applyFieldHighlight(target);
+        return;
+      }
+
+      queueFieldHighlightWhenVisible(target, attempt + 1);
+    }, 100);
+    fieldHighlightTimers.set(target, timer);
+  }
+
+  function applyFieldHighlight(target) {
+    clearFieldHighlightTimer(target);
+    target.classList.remove(FIELD_HIGHLIGHT_CLASS);
+    void target.offsetWidth;
+    target.classList.add(FIELD_HIGHLIGHT_CLASS);
+
+    const timer = window.setTimeout(() => {
+      target.classList.remove(FIELD_HIGHLIGHT_CLASS);
+      fieldHighlightTimers.delete(target);
+    }, 2800);
+    fieldHighlightTimers.set(target, timer);
+  }
+
+  function clearFieldHighlightTimer(target) {
+    if (!fieldHighlightTimers.has(target)) {
+      return;
+    }
+
+    window.clearTimeout(fieldHighlightTimers.get(target));
+    fieldHighlightTimers.delete(target);
+  }
+
+  function getHighlightTargets(fieldEntry, value) {
+    if (fieldEntry?.kind === "radio") {
+      const trimmedValue = String(value || "").trim();
+      const matchedRadio = fieldEntry.elements.find((radio) => {
+        const optionText = getRadioOptionLabel(radio);
+        return optionText === trimmedValue || radio.value === trimmedValue;
+      });
+
+      if (!matchedRadio) {
+        return [];
+      }
+
+      return [matchedRadio.labels?.[0] || matchedRadio.closest("label") || matchedRadio];
+    }
+
+    const element = fieldEntry?.kind === "element" ? fieldEntry.element : fieldEntry;
+
+    if (!(element instanceof HTMLElement)) {
+      return [];
+    }
+
+    if (fieldEntry?.pickerType) {
+      return [element.closest(".ant-picker, .el-date-editor, [class*='date-picker']") || element];
+    }
+
+    return [element];
+  }
+
+  function isInViewport(element) {
+    const rect = element.getBoundingClientRect();
+    return rect.top >= 0
+      && rect.left >= 0
+      && rect.bottom <= (window.innerHeight || document.documentElement.clientHeight)
+      && rect.right <= (window.innerWidth || document.documentElement.clientWidth);
+  }
+
+  function injectFieldHighlightStyles() {
+    if (document.getElementById(FIELD_HIGHLIGHT_STYLE_ID)) {
+      return;
+    }
+
+    const style = document.createElement("style");
+    style.id = FIELD_HIGHLIGHT_STYLE_ID;
+    style.textContent = FIELD_HIGHLIGHT_STYLE_TEXT;
+    (document.head || document.documentElement).appendChild(style);
+  }
+
+  function profileResumeFields() {
+    return self.ResumeProProfile?.profileToResumeFields(state.currentStore?.profile) || [];
+  }
+
+  function buildProfileChipsHtml(profileFields) {
+    const groups = new Map();
+
+    profileFields.forEach((field) => {
+      if (!groups.has(field.group)) groups.set(field.group, []);
+      groups.get(field.group).push(field);
+    });
+
+    return Array.from(groups, ([name, groupFields]) => `
+      <section class="resume-pro__group">
+        <div class="resume-pro__group-name">我的信息 · ${escapeHtml(name)}</div>
+        <div class="resume-pro__chips">
+          ${groupFields.map((field) => `
+            <button
+              class="resume-pro__chip"
+              type="button"
+              data-chip-id="${escapeHtml(`profile:${name}:${field.key}`)}"
+              data-value="${escapeHtml(field.value)}"
+              title="${escapeHtml(field.value)}"
+            >
+              ${escapeHtml(field.key)}
+            </button>
+          `).join("")}
+        </div>
+      </section>
+    `).join("");
+  }
+
+  // 填完之后，网页上没匹配上、也还空着的字段，问一句要不要加进「我的信息」。
+  // 这样档案里的字段来自真实表单，用户补一次内容，下次同样的字段就能自动填。
+  function offerUnansweredFields(candidates, resumeFields) {
+    const api = self.ResumeProProfile;
+    const card = shadowRoot?.querySelector("#resume-pro-profile-offer");
+    if (!api || !card) return;
+
+    const labels = api.pickUnansweredLabels(candidates, api.knownFieldKeys(state.currentStore?.profile, resumeFields));
+
+    if (!labels.length) {
+      closeProfileOffer();
+      return;
+    }
+
+    state.profileOfferLabels = labels;
+    state.profileOfferFields = resumeFields;
+    state.profileOfferCandidates = candidates;
+    const shown = labels.slice(0, 5).join("、");
+    card.querySelector("#resume-pro-profile-offer-text").textContent =
+      `网页上还有 ${labels.length} 个字段空着：${shown}${labels.length > 5 ? " 等" : ""}。加到「我的信息」并补上内容，下次就能自动填。`;
+    card.hidden = false;
+  }
+
+  function closeProfileOffer() {
+    const card = shadowRoot?.querySelector("#resume-pro-profile-offer");
+    if (card) card.hidden = true;
+    state.profileOfferLabels = [];
+    state.profileOfferFields = [];
+    state.profileOfferCandidates = [];
+  }
+
+  async function addUnansweredToProfile() {
+    // 卡片出来之后用户可能已经手动填了几个，点的时候按网页现在的样子再挑一遍。
+    const candidates = state.profileOfferCandidates || [];
+    const labels = (state.profileOfferLabels || []).filter((label) => candidates.some((candidate) =>
+      String(candidate.label ?? "").trim() === label && candidate.entry && !hasExistingValue(candidate.entry)));
+    const resumeFields = state.profileOfferFields;
+
+    if (!labels.length) {
+      closeProfileOffer();
+      showStatus("这些字段已经在网页上填好了。", "success");
+      return;
+    }
+
+    try {
+      // 用户点了才写，并且只读写 profile 这一个键，不碰模板和 AI 配置。
+      const stored = await chrome.storage.local.get("profile");
+      const { profile, added, full } = self.ResumeProProfile.addPendingFields(stored.profile, labels, resumeFields);
+
+      if (!added) {
+        if (!full) closeProfileOffer();
+        showStatus(full ? "补充字段已经满了，先在管理面板里删掉用不上的。" : "这些字段「我的信息」里已经有了。", full ? "error" : "success");
+        return;
+      }
+
+      await chrome.storage.local.set({ profile });
+      // 写成功才收起卡片；写失败时卡片留着，可以直接再点一次。
+      closeProfileOffer();
+      showStatus(`已把 ${added} 个字段加到「我的信息」，在管理面板里补上内容。`, "success", true);
+      await openManager("profile");
+    } catch (error) {
+      showStatus(`没有加进去：${error.message || "写入失败"}`, "error");
+    }
+  }
+
+  function flattenTemplateFields(template) {
+    return template.groups.flatMap((group) => group.fields.map((field) => ({
+      group: group.name,
+      key: field.key,
+      value: field.value
+    })));
+  }
+
+  function getRadioOptionLabel(radio) {
+    const directLabel = radio.labels?.[0]?.textContent?.trim();
+
+    if (directLabel) {
+      return directLabel;
+    }
+
+    const wrappingLabel = radio.closest("label")?.textContent?.trim();
+    if (wrappingLabel) {
+      return wrappingLabel;
+    }
+
+    return radio.value?.trim() || "";
+  }
+
+  function findNearestGroupLabel(element) {
+    const sectionSelectors = ["fieldset", "[role='group']", ".form-item", ".ant-form-item", "tr", "li", "section", "td"];
+
+    for (const selector of sectionSelectors) {
+      const container = element.closest(selector);
+
+      if (!container) {
+        continue;
+      }
+
+      const labelCandidate = container.querySelector("legend, label, th, .label, .form-label, .ant-form-item-label");
+      const text = labelCandidate?.textContent?.trim().replace(/[*\s]+$/g, "").trim();
+
+      if (text && text.length < 40) {
+        return text;
+      }
+    }
+
+    return "";
+  }
+
+  function sanitizeLabelText(text) {
+    return String(text || "")
+      .replace(/\s+/g, " ")
+      .replace(/^\*+/, "")
+      .replace(/\*+$/g, "")
+      .trim();
+  }
+
+  async function openManager(tab = "") {
+    try {
+      const result = await chrome.runtime.sendMessage({ type: "OPEN_MANAGER", tab });
+      if (!result?.opened) {
+        showStatus(result?.error || "无法打开管理面板，请从浏览器工具栏点击网申助手。", "error");
+      }
+    } catch {
+      showStatus("无法打开管理面板，请从浏览器工具栏点击网申助手。", "error");
+    }
+  }
+
+  function isFillTarget(target) {
+    return (
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      (target instanceof HTMLElement && target.isContentEditable)
+    );
+  }
+
+  function getActiveTemplate(store) {
+    if (!store?.templates?.length) {
+      return null;
+    }
+
+    return store.templates.find((template) => template.id === store.activeTemplateId) || store.templates[0];
+  }
+
+  function showStatus(message, variant, persist = false) {
+    const statusElement = shadowRoot?.querySelector("#resume-pro-status");
+
+    if (!statusElement) {
+      return;
+    }
+
+    statusElement.textContent = message;
+    statusElement.className = `resume-pro__status is-visible is-${variant}`;
+
+    if (state.statusTimer) {
+      clearTimeout(state.statusTimer);
+      state.statusTimer = null;
+    }
+
+    if (persist) {
+      return;
+    }
+
+    state.statusTimer = window.setTimeout(() => {
+      statusElement.className = "resume-pro__status";
+      statusElement.textContent = "";
+    }, 2400);
+  }
+
+  function startDrag(event) {
+    if (event.target.closest("button, select, input")) {
+      return;
+    }
+
+    const host = document.getElementById(SIDEBAR_ID);
+    const rect = host.getBoundingClientRect();
+    state.dragging = true;
+    state.dragOffsetX = event.clientX - rect.left;
+    state.dragOffsetY = event.clientY - rect.top;
+    shadowRoot?.querySelector(".resume-pro")?.classList.add("is-dragging");
+  }
+
+  function onDrag(event) {
+    if (!state.dragging) {
+      return;
+    }
+
+    const sidebar = document.getElementById(SIDEBAR_ID);
+    const width = sidebar.offsetWidth;
+    const height = sidebar.offsetHeight;
+    const nextLeft = clamp(event.clientX - state.dragOffsetX, 12, window.innerWidth - width - 12);
+    const nextTop = clamp(event.clientY - state.dragOffsetY, 12, window.innerHeight - height - 12);
+
+    sidebar.style.left = `${nextLeft}px`;
+    sidebar.style.top = `${nextTop}px`;
+    sidebar.style.right = "auto";
+  }
+
+  function stopDrag() {
+    if (!state.dragging) {
+      return;
+    }
+
+    state.dragging = false;
+    shadowRoot?.querySelector(".resume-pro")?.classList.remove("is-dragging");
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), Math.max(min, max));
+  }
+
+  function inferPickerInputType(container, inner) {
+    const cls = container.className || "";
+    const placeholder = (inner.getAttribute("placeholder") || "").toLowerCase();
+    if (/time/i.test(cls) || /时间|hh:mm/.test(placeholder)) return "time";
+    if (/month/i.test(cls) || /年月|月份|month/.test(placeholder)) return "month";
+    if (/datetime/i.test(cls) || /日期.*时间|datetime/.test(placeholder)) return "datetime-local";
+    return "date";
+  }
+
+  function isVisible(element) {
+    const styles = window.getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+
+    return styles.display !== "none"
+      && styles.visibility !== "hidden"
+      && rect.width > 0
+      && rect.height > 0;
+  }
+
+  function normalizeStore(rawState) {
+    const templates = Array.isArray(rawState.templates)
+      ? rawState.templates.map(normalizeTemplate).filter(Boolean)
+      : [];
+
+    const activeTemplateId = typeof rawState.activeTemplateId === "string"
+      ? rawState.activeTemplateId
+      : "";
+
+    return {
+      templates,
+      activeTemplateId: templates.some((template) => template.id === activeTemplateId)
+        ? activeTemplateId
+        : templates[0]?.id || "",
+      aiConfig: {
+        apiUrl: String(rawState.aiConfig?.apiUrl ?? "https://api.openai.com/v1/chat/completions").trim(),
+        model: String(rawState.aiConfig?.model ?? "gpt-4o-mini").trim(),
+        apiKey: String(rawState.aiConfig?.apiKey ?? "")
+      },
+      profile: self.ResumeProProfile
+        ? self.ResumeProProfile.normalizeProfile(rawState.profile)
+        : { values: {}, family: [], custom: [] }
+    };
+  }
+
+  function normalizeTemplate(template) {
+    if (!template || typeof template !== "object") {
+      return null;
+    }
+
+    const groups = Array.isArray(template.groups)
+      ? template.groups
+          .map((group) => {
+            if (!group || typeof group !== "object") {
+              return null;
+            }
+
+            const fields = Array.isArray(group.fields)
+              ? group.fields
+                  .map((field) => {
+                    if (!field || typeof field !== "object") {
+                      return null;
+                    }
+
+                    return {
+                      key: String(field.key ?? "").trim(),
+                      value: String(field.value ?? "")
+                    };
+                  })
+                  .filter((field) => field && field.key)
+              : [];
+
+            return {
+              name: String(group.name ?? "").trim() || "未分类",
+              fields
+            };
+          })
+          .filter((group) => group && group.fields.length)
+      : [];
+
+    return {
+      id: typeof template.id === "string" && template.id.trim() ? template.id : crypto.randomUUID(),
+      name: String(template.name ?? "").trim() || "未命名模板",
+      groups
+    };
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  if (self.__RESUME_PRO_TEST__) {
+    self.ResumeProHighlightTest = {
+      handleRepeatFillClick,
+      formatFillDiagnostics,
+      getHighlightTargets,
+      handleAiFillClick,
+      handleChipAction,
+      handleFieldChipClick,
+      highlightFilledField,
+      injectFieldHighlightStyles,
+      isInViewport,
+      applyChipValue,
+      composeChipText,
+      syncChipSelectionState,
+      setCurrentStore(store) {
+        state.currentStore = store;
+      },
+      setLastFocusedField(field) {
+        state.lastFocusedField = field;
+      },
+      setShadowRoot(root) {
+        shadowRoot = root;
+      }
+    };
+  }
+})();

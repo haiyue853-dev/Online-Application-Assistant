@@ -1,0 +1,14 @@
+{
+  "name": "online-application-assistant",
+  "private": true,
+  "version": "0.1.0",
+  "description": "本地优先、AI 辅助的网申表单填写浏览器扩展。",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.278",
+    "typescript": "^5.7.2"
+  }
+}

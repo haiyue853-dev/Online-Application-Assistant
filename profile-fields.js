@@ -151,6 +151,9 @@
   const SECRET_LABEL = /密码|口令|验证码|校验码|授权码|密钥|私钥|令牌|password|passwd|captcha|token|secret/i;
   // 名字普通、内容却是「密码：xxx」这种写法的，同样不交给 AI。
   const SECRET_VALUE = /(密码|口令|验证码|校验码|授权码|密钥|令牌|password|passwd|pwd|token|secret)\s*[:=：]\s*\S/i;
+  const TECH_SKILL_TOKEN = /^(?:python|java|javascript|typescript|c|c\+\+|c#|go|golang|rust|php|ruby|swift|kotlin|scala|r|matlab|sql|html|css|vue(?:\.js)?|react(?:\.js)?|angular|node(?:\.js)?|spring(?:\s*boot)?|django|flask|fastapi|pytorch|tensorflow|pandas|numpy|mysql|postgresql|redis|mongodb|docker|kubernetes|git|linux|excel|powerbi|tableau)$/iu;
+  const TECH_SKILL_WORD = /\b(?:python|java|javascript|typescript|c\+\+|c#|golang|rust|php|ruby|swift|kotlin|scala|matlab|sql|html|css|vue(?:\.js)?|react(?:\.js)?|angular|node(?:\.js)?|spring(?:\s*boot)?|django|flask|fastapi|pytorch|tensorflow|pandas|numpy|mysql|postgresql|redis|mongodb|docker|kubernetes|git|linux|power\s*bi|tableau)\b/giu;
+  const COMPANY_INDICATOR = /公司|集团|科技|有限|股份|银行|事务所|研究院|实验室|工作室|software\s+foundation|foundation|technolog(?:y|ies)|\b(?:inc|corp|ltd|llc|company|studio)\b/iu;
 
   function text(value) {
     return String(value ?? "").trim();
@@ -158,6 +161,18 @@
 
   function normalizeKey(value) {
     return text(value).toLowerCase().replace(/[\s:：*（）()【】[\]\-_/.·]+/g, "");
+  }
+
+  function isLikelyTechnicalSkillValue(value) {
+    const source = text(value);
+    if (!source || COMPANY_INDICATOR.test(source)) return false;
+    if (TECH_SKILL_TOKEN.test(source)) return true;
+    const matches = source.match(TECH_SKILL_WORD) || [];
+    return matches.length >= 2 || (matches.length >= 1 && /熟悉|掌握|精通|技能|技术栈|开发|编程/iu.test(source));
+  }
+
+  function appendUniqueLines(existing, values) {
+    return [...new Set([text(existing), ...values.map(text)].filter(Boolean))].join("\n");
   }
 
   function customIdentity(item) {
@@ -213,6 +228,17 @@
     REPEATABLE_GROUPS.forEach((definition) => {
       profile[definition.id] = normalizeRecords(source[definition.id], definition);
     });
+
+    const migratedSkills = [];
+    profile.internships = profile.internships.flatMap((record) => {
+      if (!isLikelyTechnicalSkillValue(record.company)) return [record];
+      migratedSkills.push(record.company);
+      const next = { ...record, company: "" };
+      return Object.values(next).some(Boolean) ? [next] : [];
+    });
+    if (migratedSkills.length) {
+      profile.values.skills = appendUniqueLines(profile.values.skills, migratedSkills);
+    }
 
     // 值为空的补充字段也留着：那是从网页上加进来、等用户补内容的。
     // 同名的只留一条，优先留有内容的，免得先加的空行把后填的内容挤掉。
@@ -315,7 +341,9 @@
 
   // 「我的信息」是用户核对和修改后的最终资料，因此同分组同字段以它为准。
   function mergeResumeFields(templateFields, profileFields) {
-    const template = Array.isArray(templateFields) ? templateFields : [];
+    const template = (Array.isArray(templateFields) ? templateFields : []).filter((field) =>
+      !(/公司|单位|雇主|employer|company/iu.test(String(field?.key ?? "")) && isLikelyTechnicalSkillValue(field?.value))
+    );
     const profile = Array.isArray(profileFields) ? profileFields : [];
     const taken = new Set(profile.map(fieldIdentity));
 

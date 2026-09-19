@@ -144,6 +144,28 @@ test("多条被纠正的技能都会保留在我的信息", () => {
   assert.equal(profile.values.skills, "Python\nJava、SQL");
 });
 
+test("历史数据中的技术栈公司会迁移为技能且不再参与公司填写", () => {
+  const profile = profileApi.normalizeProfile({
+    internships: [
+      { company: "Python" },
+      { company: "星河科技有限公司", role: "开发实习生" }
+    ]
+  });
+
+  assert.equal(profile.values.skills, "Python");
+  assert.deepEqual(profile.internships.map((record) => record.company), ["星河科技有限公司"]);
+
+  const merged = profileApi.mergeResumeFields(
+    [
+      { group: "实习经历", key: "Python实习经历-公司", value: "Python" },
+      { group: "实习经历", key: "星河科技有限公司实习经历-公司", value: "星河科技有限公司" }
+    ],
+    profileApi.profileToResumeFields(profile)
+  );
+  assert.equal(merged.some((field) => /公司/u.test(field.key) && field.value === "Python"), false);
+  assert.equal(merged.some((field) => field.key === "技能特长" && field.value === "Python"), true);
+});
+
 test("unanswered labels skip matched, filled, secret, file and known fields", () => {
   const known = profileApi.knownFieldKeys({ custom: [{ key: "已加过的字段", value: "" }] }, [{ key: "毕业院校" }]);
   const labels = profileApi.pickUnansweredLabels([

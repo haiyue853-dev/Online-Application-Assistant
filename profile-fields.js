@@ -175,6 +175,87 @@
     return [...new Set([text(existing), ...values.map(text)].filter(Boolean))].join("\n");
   }
 
+  function isLikelyPeriodValue(value) {
+    const source = text(value);
+    return /(?:19|20)\d{2}[./年-]\d{1,2}[月]?\s*(?:[-–—~至到]|\s)+\s*(?:至今|现在|今|(?:19|20)\d{2}[./年-]\d{1,2}[月]?)/u.test(source);
+  }
+
+  function isLikelyRoleValue(value) {
+    const source = text(value);
+    return source.length <= 30 && /(?:实习生|工程师|开发|算法|产品|运营|设计师|经理|专员|助理|顾问|研究员)$/u.test(source);
+  }
+
+  function isLikelyDutyValue(value) {
+    const source = text(value);
+    return source.length >= 12 && /负责|参与|完成|开发|搭建|设计|优化|实现|维护|协助|主导|支持|使用|基于/u.test(source);
+  }
+
+  function repairInternshipRecord(rawRecord, migratedSkills) {
+    const record = { ...rawRecord };
+    const misplaced = record.company;
+
+    if (isLikelyTechnicalSkillValue(misplaced)) {
+      migratedSkills.push(misplaced);
+      record.company = "";
+    } else if (isLikelyPeriodValue(misplaced)) {
+      if (!record.period) record.period = misplaced;
+      record.company = "";
+    } else if (isLikelyRoleValue(misplaced)) {
+      if (!record.role) record.role = misplaced;
+      record.company = "";
+    } else if (isLikelyDutyValue(misplaced)) {
+      if (!record.description) record.description = misplaced;
+      record.company = "";
+    }
+
+    return record;
+  }
+
+  function recordsCanMerge(target, fragment) {
+    return ["company", "department", "role", "period", "location"].every((field) =>
+      !target[field] || !fragment[field] || target[field] === fragment[field]
+    );
+  }
+
+  function mergeInternshipFragment(target, fragment) {
+    for (const field of ["company", "department", "role", "period", "location", "description", "achievements"]) {
+      if (!fragment[field]) continue;
+      if (!target[field]) {
+        target[field] = fragment[field];
+      } else if (["description", "achievements"].includes(field) && target[field] !== fragment[field]) {
+        target[field] = appendUniqueLines(target[field], [fragment[field]]);
+      }
+    }
+  }
+
+  function coalesceInternshipRecords(rawRecords, migratedSkills) {
+    const merged = [];
+
+    for (const rawRecord of rawRecords) {
+      const record = repairInternshipRecord(rawRecord, migratedSkills);
+      if (!Object.values(record).some(Boolean)) continue;
+
+      if (record.company) {
+        const trailingFragments = [];
+        while (merged.length && !merged.at(-1).company && recordsCanMerge(record, merged.at(-1))) {
+          trailingFragments.unshift(merged.pop());
+        }
+        trailingFragments.forEach((fragment) => mergeInternshipFragment(record, fragment));
+        merged.push(record);
+        continue;
+      }
+
+      const target = [...merged].reverse().find((candidate) => recordsCanMerge(candidate, record));
+      if (target) {
+        mergeInternshipFragment(target, record);
+      } else {
+        merged.push(record);
+      }
+    }
+
+    return merged;
+  }
+
   function customIdentity(item) {
     return `${normalizeKey(item?.group || CUSTOM_GROUP)}|${normalizeKey(item?.key)}`;
   }
@@ -230,12 +311,7 @@
     });
 
     const migratedSkills = [];
-    profile.internships = profile.internships.flatMap((record) => {
-      if (!isLikelyTechnicalSkillValue(record.company)) return [record];
-      migratedSkills.push(record.company);
-      const next = { ...record, company: "" };
-      return Object.values(next).some(Boolean) ? [next] : [];
-    });
+    profile.internships = coalesceInternshipRecords(profile.internships, migratedSkills);
     if (migratedSkills.length) {
       profile.values.skills = appendUniqueLines(profile.values.skills, migratedSkills);
     }

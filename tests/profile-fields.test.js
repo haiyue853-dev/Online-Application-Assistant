@@ -135,6 +135,38 @@ test("解析出的教育等非预置字段会带原分组显示在我的信息�
   ]);
 });
 
+test("同一段实习的日期和职责即使拿到不同锚点也不会拆成多张公司卡片", () => {
+  const profile = profileApi.profileFromResumeFields([
+    { group: "实习经历", key: "友达光电实习经历-公司", value: "友达光电" },
+    { group: "实习经历", key: "友达光电实习经历-部门", value: "部门 智能风控卫士" },
+    { group: "实习经历", key: "友达光电实习经历-岗位", value: "AI 应用开发实习生" },
+    { group: "实习经历", key: "日期片段实习经历-公司", value: "2026.07 - 至今" },
+    { group: "实习经历", key: "职责片段实习经历-职责", value: "负责智能风控功能开发与模型接入" }
+  ]);
+
+  assert.equal(profile.internships.length, 1);
+  assert.deepEqual(profile.internships[0], {
+    company: "友达光电",
+    department: "部门 智能风控卫士",
+    role: "AI 应用开发实习生",
+    period: "2026.07 - 至今",
+    location: "",
+    description: "负责智能风控功能开发与模型接入",
+    achievements: ""
+  });
+});
+
+test("两个明确公司仍保留为两段实习", () => {
+  const profile = profileApi.normalizeProfile({
+    internships: [
+      { company: "友达光电", role: "AI 应用开发实习生" },
+      { company: "星河科技", role: "后端开发实习生" }
+    ]
+  });
+
+  assert.deepEqual(profile.internships.map((record) => record.company), ["友达光电", "星河科技"]);
+});
+
 test("多条被纠正的技能都会保留在我的信息", () => {
   const profile = profileApi.profileFromResumeFields([
     { group: "技能", key: "技能特长", value: "Python" },

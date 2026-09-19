@@ -161,6 +161,74 @@ test("a parsed resume syncs normalized internship and project fields into 我的
   assert.equal(JSON.stringify(profile.projects.map((record) => [record.name, record.description, record.achievements])), JSON.stringify([["网申助手", "自动填写网申表", "减少重复录入"]]));
 });
 
+test("重新解析会原位替换当前解析模板，不会再新增一份", async () => {
+  const reply = {
+    success: true,
+    fields: [
+      { group: "基本信息", key: "姓名", value: "旧姓名" },
+      { group: "实习经历", key: "实习1公司", value: "旧公司" },
+      { group: "项目经历", key: "项目1名称", value: "旧项目" }
+    ]
+  };
+  const { popup } = parsePopup(reply);
+  await seed(popup);
+  popup.api.popupState.selectedParseFile = { name: "旧简历.txt", content: "旧内容" };
+  await popup.api.handleParseResumeClick();
+
+  const before = await popup.readState();
+  const parsedId = before.activeTemplateId;
+  before.profile.family = [{ relation: "父亲", name: "张父" }];
+  before.profile.custom.push({ key: "职业规划", value: "产品经理" });
+  await popup.writeState(before);
+
+  reply.fields = [
+    { group: "基本信息", key: "姓名", value: "新姓名" },
+    { group: "实习经历", key: "实习1公司", value: "新公司" },
+    { group: "实习经历", key: "实习1岗位", value: "新岗位" }
+  ];
+  popup.api.popupState.reparseTemplateId = parsedId;
+  popup.api.popupState.selectedParseFile = { name: "新简历.txt", content: "新内容" };
+  await popup.api.handleParseResumeClick();
+
+  const after = await popup.readState();
+  assert.equal(after.templates.length, 2);
+  assert.equal(after.activeTemplateId, parsedId);
+  assert.equal(after.templates[0].id, parsedId);
+  assert.equal(after.profile.values.name, "新姓名");
+  assert.deepEqual(JSON.parse(JSON.stringify(after.profile.internships)), [{ company: "新公司", department: "", role: "新岗位", period: "", location: "", description: "", achievements: "" }]);
+  assert.deepEqual(JSON.parse(JSON.stringify(after.profile.projects)), []);
+  assert.equal(after.profile.family[0].name, "张父");
+  assert.equal(after.profile.custom[0].key, "职业规划");
+  assert.match(popup.lastStatusFrom("parse-status"), /已重新解析并替换/);
+});
+
+test("清空解析信息需要二次确认，并保留 Excel 模板和 AI 配置", async () => {
+  const { popup } = parsePopup({
+    success: true,
+    fields: [{ group: "基本信息", key: "姓名", value: "王五" }]
+  });
+  await seed(popup);
+  popup.api.popupState.selectedParseFile = { name: "王五简历.txt", content: "王五" };
+  await popup.api.handleParseResumeClick();
+
+  await popup.api.parsedInfo.requestClear();
+  assert.equal(popup.element("clear-parsed-confirm").hidden, false);
+  assert.equal((await popup.readState()).profile.values.name, "王五", "第一次点击只显示确认框");
+
+  await popup.api.parsedInfo.confirmClear();
+  const state = await popup.readState();
+  assert.equal(state.templates.length, 1);
+  assert.equal(state.templates[0].name, "简历");
+  assert.equal(state.activeTemplateId, state.templates[0].id);
+  assert.deepEqual(JSON.parse(JSON.stringify(state.profile)), {
+    values: {}, family: [], internships: [], projects: [], custom: []
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(state.aiConfig)), {
+    apiUrl: "https://api.example.com/v1/chat/completions", model: "m", apiKey: "sk"
+  });
+  assert.equal(popup.element("clear-parsed-confirm").hidden, true);
+});
+
 test("a failed parse stores nothing", async () => {
   const { popup } = parsePopup({ success: false, error: "AI 接口请求失败" });
   await seed(popup);

@@ -388,6 +388,31 @@ select {
   margin: 12px 0 0;
 }
 
+.danger-zone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.danger-zone strong {
+  font-size: 13px;
+}
+
+.danger-zone p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.danger-zone .danger-button {
+  flex: 0 0 auto;
+}
+
 .profile-note {
   margin: 0 0 14px;
   padding: 10px 12px;

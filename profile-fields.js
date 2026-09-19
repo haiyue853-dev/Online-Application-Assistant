@@ -429,6 +429,13 @@
     ];
   }
 
+  // 主页已经原样展示当前模板；「我的信息」只在后面补模板里没有的内容，
+  // 避免同一份解析结果以“模板”和“我的信息”两个分组重复出现。
+  function excludeTemplateDuplicateFields(templateFields, profileFields) {
+    const templateKeys = new Set((Array.isArray(templateFields) ? templateFields : []).map(fieldIdentity));
+    return (Array.isArray(profileFields) ? profileFields : []).filter((field) => !templateKeys.has(fieldIdentity(field)));
+  }
+
   // 已经有着落的字段名：预置字段（字段名、界面标签、别名）、已有家庭成员的全部字段、补充字段、模板字段。
   function knownFieldKeys(rawProfile, resumeFields) {
     const profile = normalizeProfile(rawProfile);
@@ -648,6 +655,43 @@
     return mergeProfiles(rawProfile, profileFromResumeFields(resumeFields));
   }
 
+  // 重新解析时，主页模板是可信源：移除上一份简历带来的内容，再写入本次结果。
+  // 家庭成员和不属于上一份模板的补充字段继续保留。
+  function replaceResumeFieldsInProfile(rawProfile, resumeFields, previousResumeFields = null) {
+    const local = normalizeProfile(rawProfile);
+    const incoming = profileFromResumeFields(resumeFields);
+    const previous = Array.isArray(previousResumeFields)
+      ? profileFromResumeFields(previousResumeFields)
+      : null;
+    const values = { ...local.values };
+
+    if (previous) {
+      Object.keys(previous.values).forEach((key) => delete values[key]);
+    }
+    Object.assign(values, incoming.values);
+
+    const previousCustomKeys = previous
+      ? new Set(previous.custom.map(customIdentity))
+      : null;
+    const retainedCustom = local.custom.filter((item) => {
+      if (previousCustomKeys) return !previousCustomKeys.has(customIdentity(item));
+      return !item.group || item.group === CUSTOM_GROUP;
+    });
+    const incomingCustomKeys = new Set(incoming.custom.map(customIdentity));
+    const custom = [
+      ...retainedCustom.filter((item) => !incomingCustomKeys.has(customIdentity(item))),
+      ...incoming.custom
+    ];
+
+    return normalizeProfile({
+      values,
+      family: local.family,
+      internships: incoming.internships,
+      projects: incoming.projects,
+      custom
+    });
+  }
+
   function isSameMember(left, right) {
     if (left.relation !== right.relation) return false;
     if (SINGLE_RELATIONS.has(left.relation)) return true;
@@ -702,6 +746,7 @@
     countPendingFields,
     countProfileValues,
     emptyProfile,
+    excludeTemplateDuplicateFields,
     hasProfileContent,
     knownFieldKeys,
     mergeProfiles,
@@ -711,7 +756,8 @@
     pickUnansweredLabels,
     profileFromResumeFields,
     profileFromEntries,
-    profileToResumeFields
+    profileToResumeFields,
+    replaceResumeFieldsInProfile
   };
 
   if (typeof module !== "undefined" && module.exports) {

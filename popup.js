@@ -93,6 +93,7 @@ const StorageService = {
 const popupState = {
   activeTab: "templates",
   reimportTemplateId: "",
+  reparseTemplateId: "",
   pendingBackup: null,
   modelRequestId: 0,
   modelResult: null,
@@ -135,6 +136,7 @@ function cacheElements() {
   elements.templateFileInput = document.getElementById("template-file-input");
   elements.importTemplateButton = document.getElementById("import-template-button");
   elements.parseToggleButton = document.getElementById("parse-toggle-button");
+  elements.reparseResumeButton = document.getElementById("reparse-resume-button");
   elements.parseSection = document.getElementById("parse-section");
   elements.templateStatus = document.getElementById("template-status");
   elements.backupStatus = document.getElementById("backup-status");
@@ -174,6 +176,10 @@ function cacheElements() {
   elements.profileAddProject = document.getElementById("profile-add-project");
   elements.profileAddCustom = document.getElementById("profile-add-custom");
   elements.profileStatus = document.getElementById("profile-status");
+  elements.clearParsedButton = document.getElementById("clear-parsed-button");
+  elements.clearParsedConfirm = document.getElementById("clear-parsed-confirm");
+  elements.clearParsedConfirmButton = document.getElementById("clear-parsed-confirm-button");
+  elements.clearParsedCancelButton = document.getElementById("clear-parsed-cancel-button");
 }
 
 function bindEvents() {
@@ -182,9 +188,12 @@ function bindEvents() {
   });
 
   elements.parseToggleButton.addEventListener("click", () => {
+    popupState.reparseTemplateId = "";
+    updateParseFileSelection(null);
     const isOpen = elements.parseSection.classList.toggle("is-open");
     elements.parseToggleButton.classList.toggle("is-active", isOpen);
   });
+  elements.reparseResumeButton.addEventListener("click", startResumeReparse);
 
   elements.importTemplateButton.addEventListener("click", () => {
     popupState.reimportTemplateId = "";
@@ -231,6 +240,9 @@ function bindEvents() {
     elements.profileCustom.insertAdjacentHTML("beforeend", customRowHtml({ key: "", value: "" }));
     markProfileDirty();
   });
+  elements.clearParsedButton.addEventListener("click", requestClearParsedInfo);
+  elements.clearParsedConfirmButton.addEventListener("click", confirmClearParsedInfo);
+  elements.clearParsedCancelButton.addEventListener("click", hideClearParsedConfirm);
   // 侧边栏把空字段加进来之后，会带着 #profile 打开管理面板。
   self.addEventListener?.("hashchange", applyTabFromHash);
   elements.toggleApiKeyButton.addEventListener("click", toggleApiKeyVisibility);
@@ -283,6 +295,7 @@ async function render() {
 
 function renderTemplates(state) {
   const { templates, activeTemplateId } = state;
+  elements.reparseResumeButton.disabled = !templates.length;
 
   if (!templates.length) {
     elements.templateList.innerHTML = `
@@ -335,7 +348,7 @@ function renderConfig(aiConfig) {
 async function syncActiveTemplateToProfile() {
   await StorageService.update((draft) => {
     const activeTemplate = draft.templates.find((template) => template.id === draft.activeTemplateId) || draft.templates[0];
-    if (!activeTemplate) return draft;
+    if (!activeTemplate || !isAiParsedTemplate(activeTemplate)) return draft;
 
     const resumeFields = activeTemplate.groups.flatMap((group) =>
       group.fields.map((field) => ({ group: group.name, key: field.key, value: field.value }))
@@ -952,6 +965,35 @@ async function saveProfile(profile) {
 
 function markProfileDirty() {
   popupState.profileDirty = true;
+}
+
+function requestClearParsedInfo() {
+  elements.clearParsedConfirm.hidden = false;
+}
+
+function hideClearParsedConfirm() {
+  elements.clearParsedConfirm.hidden = true;
+}
+
+async function confirmClearParsedInfo() {
+  const state = await StorageService.update((draft) => {
+    draft.templates = draft.templates.filter((template) => !isAiParsedTemplate(template));
+    if (!draft.templates.some((template) => template.id === draft.activeTemplateId)) {
+      draft.activeTemplateId = draft.templates[0]?.id || "";
+    }
+    draft.profile = self.ResumeProProfile.emptyProfile();
+    return draft;
+  });
+
+  popupState.profileDirty = false;
+  popupState.reparseTemplateId = "";
+  popupState.lastParsedFields = [];
+  updateParseFileSelection(null);
+  hideClearParsedConfirm();
+  renderTemplates(state);
+  renderProfile(state.profile);
+  setActiveTab("profile");
+  showStatus("profile", "已清空全部解析信息；AI 配置和 Excel 导入模板已保留。", "success", 0);
 }
 
 function handleProfileRemoveClick(event) {
@@ -1574,8 +1616,13 @@ function normalizeTemplate(template) {
   return {
     id: typeof template.id === "string" && template.id.trim() ? template.id : crypto.randomUUID(),
     name: String(template.name ?? "").trim() || "未命名模板",
+    ...(template.source === "ai-parse" ? { source: "ai-parse" } : {}),
     groups
   };
+}
+
+function isAiParsedTemplate(template) {
+  return template?.source === "ai-parse" || /（AI 解析）/u.test(String(template?.name || ""));
 }
 
 function normalizeAiConfig(aiConfig) {
@@ -1677,6 +1724,7 @@ function updateParseFileSelection(file) {
 
   if (elements.parseResumeButton) {
     elements.parseResumeButton.disabled = !file;
+    elements.parseResumeButton.textContent = popupState.reparseTemplateId ? "重新解析并替换" : "开始解析";
   }
 
   // 换了一份文件，上一份的「下载 Excel 核对」就不该再留着，免得下成旧简历。
@@ -1684,6 +1732,23 @@ function updateParseFileSelection(file) {
     popupState.lastParsedFields = [];
     if (elements.parseDownloadButton) elements.parseDownloadButton.hidden = true;
   }
+}
+
+async function startResumeReparse() {
+  const state = await StorageService.getState();
+  const activeTemplate = state.templates.find((template) => template.id === state.activeTemplateId) || state.templates[0];
+
+  if (!activeTemplate) {
+    showStatus("template", "当前没有可替换的模板，请先解析简历。", "error", 0);
+    return;
+  }
+
+  popupState.reparseTemplateId = activeTemplate.id;
+  updateParseFileSelection(null);
+  elements.parseSection.classList.add("is-open");
+  elements.parseToggleButton.classList.add("is-active");
+  showParseStatus(`请选择新简历；解析成功后会替换「${activeTemplate.name}」。`, "success", 0);
+  elements.parseFileInput.click();
 }
 
 async function handleParseResumeClick() {
@@ -1733,28 +1798,62 @@ async function handleParseResumeClick() {
     popupState.lastParsedFields = fields;
     if (elements.parseDownloadButton) elements.parseDownloadButton.hidden = false;
     let template = null;
+    let reparsed = false;
 
     const updatedState = await StorageService.update((draft) => {
-      template = {
-        id: crypto.randomUUID(),
-        name: resolveTemplateName(`${getTemplateNameFromFile(file.name)}（AI 解析）`, draft.templates),
-        groups: parsedFieldsToGroups(fields)
-      };
-      draft.templates.unshift(template);
+      const replaceIndex = popupState.reparseTemplateId
+        ? draft.templates.findIndex((item) => item.id === popupState.reparseTemplateId)
+        : -1;
+      const previousTemplate = replaceIndex >= 0
+        ? draft.templates[replaceIndex]
+        : draft.templates.find((item) => item.id === draft.activeTemplateId);
+      const previousFields = previousTemplate
+        ? previousTemplate.groups.flatMap((group) => group.fields.map((field) => ({
+            group: group.name,
+            key: field.key,
+            value: field.value
+          })))
+        : null;
+
+      if (replaceIndex >= 0) {
+        reparsed = true;
+        template = {
+          id: previousTemplate.id,
+          name: previousTemplate.name,
+          source: "ai-parse",
+          groups: parsedFieldsToGroups(fields)
+        };
+        draft.templates.splice(replaceIndex, 1, template);
+      } else {
+        template = {
+          id: crypto.randomUUID(),
+          name: resolveTemplateName(`${getTemplateNameFromFile(file.name)}（AI 解析）`, draft.templates),
+          source: "ai-parse",
+          groups: parsedFieldsToGroups(fields)
+        };
+        draft.templates.unshift(template);
+      }
       draft.activeTemplateId = template.id;
-      draft.profile = self.ResumeProProfile.mergeResumeFieldsIntoProfile(draft.profile, fields);
+      draft.profile = self.ResumeProProfile.replaceResumeFieldsInProfile(draft.profile, fields, previousFields);
       return draft;
     });
 
+    popupState.reparseTemplateId = "";
     renderProfile(updatedState.profile);
     setActiveTab("profile");
     showStatus("profile", `简历解析完成，已同步 ${countTemplateFields(template)} 个字段。请核对后保存修改。`, "success", 0);
-    showParseStatus(`已存为模板「${template.name}」并同步到「我的信息」，共 ${countTemplateFields(template)} 个字段。`, "success", 0);
+    showParseStatus(
+      reparsed
+        ? `已重新解析并替换「${template.name}」，同时按主页数据更新了「我的信息」，共 ${countTemplateFields(template)} 个字段。`
+        : `已存为模板「${template.name}」并同步到「我的信息」，共 ${countTemplateFields(template)} 个字段。`,
+      "success",
+      0
+    );
     updateParseFileSelection(null);
   } catch (error) {
     showParseStatus(error.message || "简历解析失败。", "error", 0);
   } finally {
-    elements.parseResumeButton.textContent = "开始解析";
+    elements.parseResumeButton.textContent = popupState.reparseTemplateId ? "重新解析并替换" : "开始解析";
     elements.parseResumeButton.disabled = !popupState.selectedParseFile;
   }
 }
@@ -1957,6 +2056,7 @@ if (typeof self !== "undefined" && self.__RESUME_PRO_TEST__) {
     popupState,
     resolveTemplateName,
     StorageService,
+    startResumeReparse,
     updateParseFileSelection,
     providers: {
       handleChange: handleProviderChange,
@@ -1969,6 +2069,11 @@ if (typeof self !== "undefined" && self.__RESUME_PRO_TEST__) {
       renderProfile,
       saveProfile,
       stripProfileSecrets
+    },
+    parsedInfo: {
+      confirmClear: confirmClearParsedInfo,
+      hideClearConfirm: hideClearParsedConfirm,
+      requestClear: requestClearParsedInfo
     },
     backup: {
       applyBackup,

@@ -25,6 +25,13 @@ test("管理页加载服务商预设且不再加载桌面模块", () => {
   assert.doesNotMatch(popup, /link\//u);
 });
 
+test("管理页提供重新解析和仅清空解析信息的入口", () => {
+  assert.match(popup, /id="reparse-resume-button"/u);
+  assert.match(popup, /id="clear-parsed-button"/u);
+  assert.match(popup, /id="clear-parsed-confirm"/u);
+  assert.match(popup, /不会删除 AI 配置和 Excel 导入模板/u);
+});
+
 test("扩展以网申助手品牌展示", () => {
   assert.equal(manifest.name, "网申助手");
   assert.match(popup, /网申助手/u);

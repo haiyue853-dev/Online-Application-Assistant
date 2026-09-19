@@ -31,6 +31,7 @@
             </div>
             <div class="toolbar-actions">
               <button class="secondary-button" id="parse-toggle-button" type="button">AI 解析简历</button>
+              <button class="secondary-button" id="reparse-resume-button" type="button" disabled>重新解析简历</button>
               <button class="primary-button" id="import-template-button" type="button">导入 Excel</button>
             </div>
           </div>
@@ -137,6 +138,21 @@
 
             <button class="primary-button is-full" type="submit">保存</button>
             <div class="status-message" id="profile-status" aria-live="polite"></div>
+
+            <div class="danger-zone">
+              <div>
+                <strong>清空解析信息</strong>
+                <p>清空“我的信息”和 AI 解析生成的模板；不会删除 AI 配置和 Excel 导入模板。</p>
+              </div>
+              <button class="danger-button" id="clear-parsed-button" type="button">清空所有解析信息</button>
+            </div>
+            <div class="backup-confirm is-warning" id="clear-parsed-confirm" hidden>
+              <p class="backup-confirm__text">确认清空全部解析信息？此操作无法撤销，AI 配置和 Excel 导入模板会保留。</p>
+              <div class="backup-confirm__actions">
+                <button class="danger-button" id="clear-parsed-confirm-button" type="button">确认清空</button>
+                <button class="text-button" id="clear-parsed-cancel-button" type="button">取消</button>
+              </div>
+            </div>
           </form>
         </div>
       </section>

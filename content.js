@@ -284,8 +284,11 @@
     templateSelect.disabled = !templates.length;
 
     const profileFields = profileResumeFields();
+    const visibleProfileFields = activeTemplate && self.ResumeProProfile
+      ? self.ResumeProProfile.excludeTemplateDuplicateFields(flattenTemplateFields(activeTemplate), profileFields)
+      : profileFields;
 
-    if (!activeTemplate && !profileFields.length) {
+    if (!activeTemplate && !visibleProfileFields.length) {
       groupsContainer.innerHTML = `
         <div class="resume-pro__empty">
           <p>还没有简历数据。</p>
@@ -310,7 +313,7 @@
           `).join("")}
         </div>
       </section>
-    `).join("") + buildProfileChipsHtml(profileFields);
+    `).join("") + buildProfileChipsHtml(visibleProfileFields);
 
       groupsContainer.querySelectorAll(".resume-pro__chip").forEach((button) => {
         button.addEventListener("mousedown", (event) => {

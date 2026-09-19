@@ -92,6 +92,53 @@ test("parsed resume fields sync overview, internships and projects into 我的�
   assert.deepEqual(profile.projects.map((record) => [record.name, record.description]), [["网申助手", "自动填写扩展"]]);
 });
 
+test("重新解析会替换旧的经历和解析字段，同时保留手动补充的信息", () => {
+  const profile = profileApi.replaceResumeFieldsInProfile(
+    {
+      values: { name: "旧姓名", marital: "未婚" },
+      family: [{ relation: "父亲", name: "张父" }],
+      internships: [{ company: "旧公司", role: "旧岗位" }],
+      projects: [{ name: "旧项目" }],
+      custom: [
+        { key: "职业规划", value: "产品经理" },
+        { group: "教育背景", key: "学校", value: "旧大学" }
+      ]
+    },
+    [
+      { group: "基本信息", key: "姓名", value: "新姓名" },
+      { group: "实习经历", key: "实习1公司", value: "新公司" },
+      { group: "实习经历", key: "实习1岗位", value: "新岗位" },
+      { group: "教育背景", key: "学校", value: "新大学" }
+    ]
+  );
+
+  assert.equal(profile.values.name, "新姓名");
+  assert.equal(profile.values.marital, "未婚");
+  assert.deepEqual(profile.family.map((member) => [member.relation, member.name]), [["父亲", "张父"]]);
+  assert.deepEqual(profile.internships.map((record) => [record.company, record.role]), [["新公司", "新岗位"]]);
+  assert.deepEqual(profile.projects, []);
+  assert.deepEqual(profile.custom, [
+    { key: "职业规划", value: "产品经理" },
+    { group: "教育背景", key: "学校", value: "新大学" }
+  ]);
+});
+
+test("主页只补充我的信息中模板没有的字段，避免同一解析结果显示两遍", () => {
+  const extras = profileApi.excludeTemplateDuplicateFields(
+    [
+      { group: "基本信息", key: "姓名", value: "主页姓名" },
+      { group: "教育背景", key: "学校", value: "主页大学" }
+    ],
+    [
+      { group: "基本信息", key: "姓名", value: "我的信息姓名" },
+      { group: "教育背景", key: "学校", value: "我的信息大学" },
+      { group: "网申补充", key: "是否服从调剂", value: "是" }
+    ]
+  );
+
+  assert.deepEqual(extras, [{ group: "网申补充", key: "是否服从调剂", value: "是" }]);
+});
+
 test("semanticized parsed fields also sync into 我的信息", () => {
   const profile = profileApi.profileFromResumeFields([
     { group: "实习经历", key: "星河科技实习经历-公司", value: "星河科技" },

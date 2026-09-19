@@ -150,6 +150,16 @@ select {
   margin-bottom: 16px;
 }
 
+.template-toolbar {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.template-toolbar h2,
+.template-toolbar p {
+  white-space: nowrap;
+}
+
 .panel-toolbar.is-stacked {
   margin-bottom: 18px;
 }
@@ -682,7 +692,13 @@ select {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
   flex-shrink: 0;
+  width: 100%;
+}
+
+.toolbar-actions button {
+  white-space: nowrap;
 }
 
 .secondary-button.is-active {

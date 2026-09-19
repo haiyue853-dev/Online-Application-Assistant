@@ -35,6 +35,8 @@ test("管理页提供重新解析和仅清空解析信息的入口", () => {
 test("扩展以网申助手品牌展示", () => {
   assert.equal(manifest.name, "网申助手");
   assert.match(popup, /网申助手/u);
+  assert.match(popup, /AI 解析简历，核对信息后自动填写网申表。/u);
+  assert.doesNotMatch(popup, /Excel 维护数据/u);
 });
 
 test("点击工具栏图标切换网页里的完整悬浮助手", () => {

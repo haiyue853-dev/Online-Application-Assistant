@@ -34,6 +34,7 @@
 }
 
 :host .resume-pro__title-wrap {
+  flex: 1;
   min-width: 0;
 }
 
@@ -44,16 +45,19 @@
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 :host .resume-pro__title {
   display: block;
   font-size: 16px;
+  white-space: nowrap;
 }
 
 :host .resume-pro__window-actions {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   gap: 6px;
 }
 
@@ -295,7 +299,7 @@
 }
 
 :host .resume-pro.is-collapsed {
-  width: 160px;
+  width: 220px;
 }
 
 :host .resume-pro.is-collapsed .resume-pro__body {

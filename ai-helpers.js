@@ -566,7 +566,7 @@
     const hasRealOptions = Array.isArray(field?.options)
       && field.options.some((option) => !isPlaceholderOption(option) && String(typeof option === "object" && option !== null ? option.text ?? "" : option ?? "").trim());
 
-    if ((field?.inputType === "select" || field?.inputType === "radio") && hasRealOptions && field?.cascadeGroup === undefined) {
+    if ((field?.inputType === "select" || field?.inputType === "radio" || field?.inputType === "combobox") && hasRealOptions && field?.cascadeGroup === undefined) {
       // 和网页上实际选值用同一套规则，否则页面能选上的值会先在这里被丢掉。
       if (findSelectOptionIndex(field.options, text) < 0) {
         return false;
@@ -683,6 +683,15 @@
     const parsed = parseDateParts(raw);
 
     if (!parsed) {
+      // 即使解析失败，也尝试转换常见非标准格式
+      const slashFormat = raw.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+      if (slashFormat) {
+        return `${slashFormat[1]}-${pad2(parseInt(slashFormat[2], 10))}-${pad2(parseInt(slashFormat[3], 10))}`;
+      }
+      const slashMonthFormat = raw.match(/^(\d{4})\/(\d{1,2})$/);
+      if (slashMonthFormat) {
+        return `${slashMonthFormat[1]}-${pad2(parseInt(slashMonthFormat[2], 10))}`;
+      }
       return raw;
     }
 
@@ -702,6 +711,13 @@
         if (!year || !month || !day) return raw;
         return `${year}-${pad2(month)}-${pad2(day)}T${pad2(hour ?? 0)}:${pad2(minute ?? 0)}`;
       default:
+        // 默认输出 ISO 格式，兼容 moment.js
+        if (year && month && day) {
+          return `${year}-${pad2(month)}-${pad2(day)}`;
+        }
+        if (year && month) {
+          return `${year}-${pad2(month)}`;
+        }
         return raw;
     }
   }

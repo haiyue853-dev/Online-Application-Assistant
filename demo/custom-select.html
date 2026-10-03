@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>自定义下拉组件测试</title>
+  <style>
+    body { max-width: 760px; margin: 40px auto; padding: 0 20px; color: #172033; font: 15px/1.6 system-ui, sans-serif; }
+    h1 { margin-bottom: 6px; }
+    fieldset { margin: 22px 0; padding: 20px; border: 1px solid #dbe2ef; border-radius: 12px; }
+    legend { padding: 0 8px; font-weight: 700; }
+    label { display: grid; gap: 6px; margin: 14px 0; }
+    input, select, textarea, button { box-sizing: border-box; width: 100%; padding: 10px 12px; font: inherit; }
+    .radio-row { display: flex; gap: 20px; }
+    .radio-row label { display: flex; grid-template-columns: auto 1fr; align-items: center; }
+    .radio-row input { width: auto; }
+    button { border: 0; border-radius: 8px; background: #3156d3; color: white; cursor: pointer; }
+    #event-log { min-height: 60px; padding: 12px; border-radius: 8px; background: #f5f7fb; white-space: pre-wrap; }
+
+    /* 模拟 Ant Design Select 样式 */
+    .ant-select { position: relative; display: inline-block; width: 100%; }
+    .ant-select-selector { display: flex; align-items: center; min-height: 38px; padding: 4px 11px; border: 1px solid #d9d9d9; border-radius: 6px; background: #fff; cursor: pointer; }
+    .ant-select-selection-item { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .ant-select-selection-placeholder { color: #bfbfbf; }
+    .ant-select-arrow { margin-left: 8px; color: #bfbfbf; }
+    .ant-select-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 1050; margin-top: 4px; padding: 4px 0; background: #fff; border: 1px solid #f0f0f0; border-radius: 6px; box-shadow: 0 3px 6px rgba(0,0,0,0.12); display: none; }
+    .ant-select-dropdown.show { display: block; }
+    .ant-select-item-option { padding: 5px 12px; cursor: pointer; transition: background 0.2s; }
+    .ant-select-item-option:hover { background: #f5f5f5; }
+    .ant-select-item-option-selected { background: #e6f4ff; font-weight: 600; }
+    .ant-select-open .ant-select-selector { border-color: #4096ff; box-shadow: 0 0 0 2px rgba(5,145,255,0.1); }
+
+    /* 月份选择器单元格 */
+    .ant-picker-cell { padding: 8px; text-align: center; cursor: pointer; border-radius: 6px; transition: background 0.2s; }
+    .ant-picker-cell:hover { background: #f5f5f5; }
+    .ant-picker-cell-selected { background: #e6f4ff; }
+    .ant-picker-cell-selected .ant-picker-cell-inner { color: #1677ff; font-weight: 600; }
+
+    /* 模拟 Element UI Select 样式 */
+    .el-select { position: relative; display: inline-block; width: 100%; }
+    .el-input__inner { width: 100%; height: 38px; padding: 0 15px; border: 1px solid #dcdfe6; border-radius: 4px; background: #fff; font-size: 14px; cursor: pointer; }
+    .el-input__inner:focus { border-color: #409eff; }
+    .el-select-dropdown { position: absolute; top: 100%; left: 0; right: 0; z-index: 1050; margin-top: 4px; padding: 6px 0; background: #fff; border: 1px solid #e4e7ed; border-radius: 4px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); display: none; }
+    .el-select-dropdown.show { display: block; }
+    .el-select-dropdown__item { padding: 0 20px; line-height: 36px; font-size: 14px; cursor: pointer; }
+    .el-select-dropdown__item:hover { background: #f5f7fa; }
+    .el-select-dropdown__item.selected { color: #409eff; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>自定义下拉组件测试</h1>
+  <p>测试 Ant Design 和 Element UI 风格的自定义下拉组件。</p>
+
+  <form id="custom-form">
+    <fieldset>
+      <legend>Ant Design 风格下拉</legend>
+      <label>学历
+        <div class="ant-select" data-field="education">
+          <div class="ant-select-selector">
+            <span class="ant-select-selection-item" style="display:none"></span>
+            <span class="ant-select-selection-placeholder">请选择学历</span>
+            <span class="ant-select-arrow">▼</span>
+          </div>
+          <div class="ant-select-dropdown">
+            <div class="ant-select-item-option" data-value="highschool">高中</div>
+            <div class="ant-select-item-option" data-value="bachelor">本科</div>
+            <div class="ant-select-item-option" data-value="master">硕士</div>
+            <div class="ant-select-item-option" data-value="doctor">博士</div>
+          </div>
+          <input type="hidden" name="education" value="">
+        </div>
+      </label>
+
+      <label>政治面貌
+        <div class="ant-select" data-field="political">
+          <div class="ant-select-selector">
+            <span class="ant-select-selection-item" style="display:none"></span>
+            <span class="ant-select-selection-placeholder">请选择政治面貌</span>
+            <span class="ant-select-arrow">▼</span>
+          </div>
+          <div class="ant-select-dropdown">
+            <div class="ant-select-item-option" data-value="party">中共党员</div>
+            <div class="ant-select-item-option" data-value="league">共青团员</div>
+            <div class="ant-select-item-option" data-value="masses">群众</div>
+            <div class="ant-select-item-option" data-value="democratic">民主党派</div>
+          </div>
+          <input type="hidden" name="political" value="">
+        </div>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Element UI 风格下拉</legend>
+      <label>性别
+        <div class="el-select" data-field="gender">
+          <input type="text" class="el-input__inner" placeholder="请选择性别" readonly>
+          <div class="el-select-dropdown">
+            <div class="el-select-dropdown__item" data-value="male">男</div>
+            <div class="el-select-dropdown__item" data-value="female">女</div>
+            <div class="el-select-dropdown__item" data-value="other">其他</div>
+          </div>
+          <input type="hidden" name="gender" value="">
+        </div>
+      </label>
+
+      <label>工作年限
+        <div class="el-select" data-field="experience">
+          <input type="text" class="el-input__inner" placeholder="请选择工作年限" readonly>
+          <div class="el-select-dropdown">
+            <div class="el-select-dropdown__item" data-value="0">应届生</div>
+            <div class="el-select-dropdown__item" data-value="1">1年</div>
+            <div class="el-select-dropdown__item" data-value="3">3年</div>
+            <div class="el-select-dropdown__item" data-value="5">5年</div>
+            <div class="el-select-dropdown__item" data-value="10">10年以上</div>
+          </div>
+          <input type="hidden" name="experience" value="">
+        </div>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Ant Design 带搜索下拉（showSearch）</legend>
+      <label>获奖级别
+        <div class="ant-select ant-select-show-search" data-field="awardLevel">
+          <div class="ant-select-selector">
+            <input type="text" class="ant-select-search-input" placeholder="请选择" style="border:0; outline:0; flex:1; font:inherit; background:transparent;">
+            <span class="ant-select-arrow">▼</span>
+          </div>
+          <div class="ant-select-dropdown">
+            <div class="ant-select-search-dropdown-input" style="padding:4px 12px 8px;">
+              <input type="text" placeholder="搜索" class="ant-select-dropdown-search" style="width:100%; padding:6px 10px; border:1px solid #d9d9d9; border-radius:4px; font:inherit;">
+            </div>
+            <div class="ant-select-item-option" data-value="team">班组级</div>
+            <div class="ant-select-item-option" data-value="school">院校级</div>
+            <div class="ant-select-item-option" data-value="county">县市级</div>
+            <div class="ant-select-item-option" data-value="province">省区级</div>
+            <div class="ant-select-item-option" data-value="national">国家级</div>
+            <div class="ant-select-item-option" data-value="international">国际级</div>
+            <div class="ant-select-item-option" data-value="company">公司级</div>
+            <div class="ant-select-item-option" data-value="group">集团级</div>
+          </div>
+          <input type="hidden" name="awardLevel" value="">
+        </div>
+      </label>
+    </fieldset>
+
+    <fieldset>
+      <legend>原生元素（对比用）</legend>
+      <label>姓名<input name="name" type="text" autocomplete="name"></label>
+      <label>预计毕业日期<input name="graduationDate" type="date"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>月份选择器（Ant Design 风格）</legend>
+      <label>开始月份
+        <div class="ant-picker" data-field="startMonth">
+          <input type="text" class="ant-picker-input" placeholder="请选择月份" readonly>
+          <div class="ant-picker-dropdown" style="display:none; position:absolute; top:100%; left:0; z-index:1050; margin-top:4px; padding:12px; background:#fff; border:1px solid #f0f0f0; border-radius:6px; box-shadow:0 3px 6px rgba(0,0,0,0.12);">
+            <div class="ant-picker-header" style="text-align:center; margin-bottom:8px; font-weight:600;">
+              <span class="ant-picker-header-prev-btn" style="cursor:pointer; margin-right:16px;">&laquo;</span>
+              <span class="ant-picker-header-year">2026</span>
+              <span class="ant-picker-header-next-btn" style="cursor:pointer; margin-left:16px;">&raquo;</span>
+            </div>
+            <div class="ant-picker-content" style="display:grid; grid-template-columns:repeat(3,1fr); gap:4px;">
+              <div class="ant-picker-cell" data-month="0"><div class="ant-picker-cell-inner">1月</div></div>
+              <div class="ant-picker-cell" data-month="1"><div class="ant-picker-cell-inner">2月</div></div>
+              <div class="ant-picker-cell" data-month="2"><div class="ant-picker-cell-inner">3月</div></div>
+              <div class="ant-picker-cell" data-month="3"><div class="ant-picker-cell-inner">4月</div></div>
+              <div class="ant-picker-cell" data-month="4"><div class="ant-picker-cell-inner">5月</div></div>
+              <div class="ant-picker-cell" data-month="5"><div class="ant-picker-cell-inner">6月</div></div>
+              <div class="ant-picker-cell" data-month="6"><div class="ant-picker-cell-inner">7月</div></div>
+              <div class="ant-picker-cell" data-month="7"><div class="ant-picker-cell-inner">8月</div></div>
+              <div class="ant-picker-cell" data-month="8"><div class="ant-picker-cell-inner">9月</div></div>
+              <div class="ant-picker-cell" data-month="9"><div class="ant-picker-cell-inner">10月</div></div>
+              <div class="ant-picker-cell" data-month="10"><div class="ant-picker-cell-inner">11月</div></div>
+              <div class="ant-picker-cell" data-month="11"><div class="ant-picker-cell-inner">12月</div></div>
+            </div>
+          </div>
+          <input type="hidden" name="startMonth" value="">
+        </div>
+      </label>
+    </fieldset>
+
+    <button type="submit">手动提交测试</button>
+  </form>
+
+  <h2>最近触发的事件</h2>
+  <div id="event-log">尚无事件</div>
+
+  <script>
+    const log = document.getElementById("event-log");
+
+    // Ant Design Select 交互
+    document.querySelectorAll('.ant-select:not(.ant-select-show-search)').forEach(select => {
+      const selector = select.querySelector('.ant-select-selector');
+      const dropdown = select.querySelector('.ant-select-dropdown');
+      const hiddenInput = select.querySelector('input[type="hidden"]');
+      const placeholder = select.querySelector('.ant-select-selection-placeholder');
+      const selectedItem = select.querySelector('.ant-select-selection-item');
+
+      selector.addEventListener('click', () => {
+        const isOpen = select.classList.toggle('ant-select-open');
+        dropdown.classList.toggle('show', isOpen);
+      });
+
+      select.querySelectorAll('.ant-select-item-option').forEach(option => {
+        option.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const value = option.dataset.value;
+          const text = option.textContent;
+
+          select.querySelectorAll('.ant-select-item-option').forEach(o => o.classList.remove('ant-select-item-option-selected'));
+          option.classList.add('ant-select-item-option-selected');
+
+          hiddenInput.value = value;
+          placeholder.style.display = 'none';
+          selectedItem.style.display = 'block';
+          selectedItem.textContent = text;
+
+          select.classList.remove('ant-select-open');
+          dropdown.classList.remove('show');
+
+          hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+          hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+          log.textContent = `input: ${hiddenInput.name} = ${text} (${value})\nchange: ${hiddenInput.name} = ${text} (${value})`;
+        });
+      });
+    });
+
+    // Ant Design showSearch Select 交互
+    document.querySelectorAll('.ant-select-show-search').forEach(select => {
+      const selector = select.querySelector('.ant-select-selector');
+      const triggerInput = select.querySelector('.ant-select-search-input');
+      const dropdown = select.querySelector('.ant-select-dropdown');
+      const dropdownSearch = dropdown.querySelector('.ant-select-dropdown-search');
+      const hiddenInput = select.querySelector('input[type="hidden"]');
+      const allOptions = Array.from(select.querySelectorAll('.ant-select-item-option'));
+
+      selector.addEventListener('click', () => {
+        const isOpen = select.classList.toggle('ant-select-open');
+        dropdown.classList.toggle('show', isOpen);
+        if (isOpen) triggerInput.focus();
+      });
+
+      // 下拉内搜索框过滤选项
+      dropdownSearch.addEventListener('input', () => {
+        const keyword = dropdownSearch.value.trim().toLowerCase();
+        allOptions.forEach(opt => {
+          const text = opt.textContent.toLowerCase();
+          opt.style.display = (!keyword || text.includes(keyword)) ? '' : 'none';
+        });
+      });
+
+      allOptions.forEach(option => {
+        option.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const value = option.dataset.value;
+          const text = option.textContent;
+
+          hiddenInput.value = value;
+          triggerInput.value = text;
+          triggerInput.placeholder = '';
+
+          select.classList.remove('ant-select-open');
+          dropdown.classList.remove('show');
+          dropdownSearch.value = '';
+          allOptions.forEach(o => o.style.display = '');
+
+          hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+          hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+          log.textContent = `input: ${hiddenInput.name} = ${text} (${value})\nchange: ${hiddenInput.name} = ${text} (${value})`;
+        });
+      });
+    });
+
+    // Element UI Select 交互
+    document.querySelectorAll('.el-select').forEach(select => {
+      const input = select.querySelector('.el-input__inner');
+      const dropdown = select.querySelector('.el-select-dropdown');
+      const hiddenInput = select.querySelector('input[type="hidden"]');
+
+      input.addEventListener('click', () => {
+        const isOpen = dropdown.classList.toggle('show');
+        input.style.borderColor = isOpen ? '#409eff' : '#dcdfe6';
+      });
+
+      select.querySelectorAll('.el-select-dropdown__item').forEach(item => {
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const value = item.dataset.value;
+          const text = item.textContent;
+
+          select.querySelectorAll('.el-select-dropdown__item').forEach(i => i.classList.remove('selected'));
+          item.classList.add('selected');
+
+          input.value = text;
+          hiddenInput.value = value;
+
+          dropdown.classList.remove('show');
+          input.style.borderColor = '#dcdfe6';
+
+          hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+          hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+          log.textContent = `input: ${hiddenInput.name} = ${text} (${value})\nchange: ${hiddenInput.name} = ${text} (${value})`;
+        });
+      });
+    });
+
+    // 点击外部关闭下拉
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.ant-select')) {
+        document.querySelectorAll('.ant-select').forEach(s => {
+          s.classList.remove('ant-select-open');
+          s.querySelector('.ant-select-dropdown').classList.remove('show');
+        });
+      }
+      if (!e.target.closest('.el-select')) {
+        document.querySelectorAll('.el-select').forEach(s => {
+          s.querySelector('.el-select-dropdown').classList.remove('show');
+          s.querySelector('.el-input__inner').style.borderColor = '#dcdfe6';
+        });
+      }
+    });
+
+    // Ant Design 月份选择器交互
+    document.querySelectorAll('.ant-picker[data-field]').forEach(picker => {
+      const input = picker.querySelector('.ant-picker-input');
+      const dropdown = picker.querySelector('.ant-picker-dropdown');
+      const hiddenInput = picker.querySelector('input[type="hidden"]');
+
+      input.addEventListener('click', () => {
+        const isOpen = dropdown.style.display !== 'none';
+        dropdown.style.display = isOpen ? 'none' : 'block';
+      });
+
+      picker.querySelectorAll('.ant-picker-cell').forEach(cell => {
+        cell.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const monthIndex = parseInt(cell.dataset.month, 10);
+          const monthText = cell.querySelector('.ant-picker-cell-inner').textContent;
+
+          picker.querySelectorAll('.ant-picker-cell').forEach(c => c.classList.remove('ant-picker-cell-selected'));
+          cell.classList.add('ant-picker-cell-selected');
+
+          input.value = monthText;
+          hiddenInput.value = `2026-${String(monthIndex + 1).padStart(2, '0')}`;
+          dropdown.style.display = 'none';
+
+          hiddenInput.dispatchEvent(new Event('input', { bubbles: true }));
+          hiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
+          log.textContent = `input: ${hiddenInput.name} = ${monthText} (${hiddenInput.value})\nchange: ${hiddenInput.name} = ${monthText} (${hiddenInput.value})`;
+        });
+      });
+    });
+
+    // 点击外部关闭月份选择器
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.ant-picker[data-field]')) {
+        document.querySelectorAll('.ant-picker[data-field]').forEach(p => {
+          p.querySelector('.ant-picker-dropdown').style.display = 'none';
+        });
+      }
+    });
+
+    document.getElementById("custom-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      log.textContent += "\nsubmit: 仅由你手动触发";
+    });
+  </script>
+</body>
+</html>

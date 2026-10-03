@@ -131,6 +131,10 @@ function loadHighlightHelpers(options = {}) {
       return null;
     },
     querySelectorAll(selector) {
+      if (typeof options.dom === "function") {
+        const custom = options.dom(selector);
+        if (custom) return custom;
+      }
       if (selector.includes("input:not")) {
         return options.formElements || [];
       }
@@ -778,4 +782,240 @@ test("highlight styles are not duplicated in content.css", () => {
 
   assert.doesNotMatch(contentCss, /\.resume-pro__field-highlight\b/);
   assert.doesNotMatch(contentCss, /@keyframes\s+resume-pro-field-highlight\b/);
+});
+
+async function drainTimers(timers, limit = 500) {
+  for (let step = 0; step < limit; step += 1) {
+    const pending = timers.filter((timer) => !timer.cleared && !timer.started);
+    for (const timer of pending) {
+      timer.started = true;
+      try {
+        // 这里不能 await：回调里再登记的定时器只有靠本循环继续泵才会执行，await 会互相卡死
+        const result = timer.callback();
+        if (result && typeof result.catch === "function") result.catch(() => {});
+      } catch (_) {
+        // 回调内部的拒绝由被测流程自己兜住
+      }
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    if (!pending.length && !timers.some((timer) => !timer.cleared && !timer.started)) return step;
+  }
+  return -1;
+}
+
+test("北森 phoenix 月份面板：先翻年份再点月份，不能把年份里的数字当月份", async () => {
+  let panel = null;
+  let panelOpen = true;
+  const { helpers, timers, HTMLElement, HTMLInputElement } = loadHighlightHelpers({
+    dom(selector) {
+      if (selector.includes("phoenix-calendar:not")) return panelOpen ? [panel] : [];
+      return undefined;
+    }
+  });
+
+  const input = new HTMLInputElement();
+  input.readOnly = true;
+  input.type = "text";
+  // 北森的日期输入框既挂 role="combobox"，占位符又是"时间"，两个陷阱都要走日期面板
+  input.attributes.placeholder = "请选择时间";
+  input.attributes.role = "combobox";
+
+  const headerState = { year: 2026 };
+  const header = new HTMLElement();
+  header.className = "phoenix-calendar-month-panel-header";
+  header.textContent = "2026";
+  const prevYear = new HTMLElement();
+  prevYear.className = "phoenix-calendar-prev-year-btn";
+  prevYear.onclick = () => {
+    headerState.year -= 1;
+    header.textContent = String(headerState.year);
+  };
+  const nextYear = new HTMLElement();
+  nextYear.className = "phoenix-calendar-next-year-btn";
+  header.querySelectorAll = (selector) => (selector.includes("button") ? [prevYear, nextYear] : []);
+
+  const clicked = [];
+  const monthCells = [];
+  for (let month = 1; month <= 12; month += 1) {
+    const cell = new HTMLElement();
+    cell.className = "phoenix-calendar-month-panel-cell";
+    cell.textContent = `${month}月`;
+    cell.children = [];
+    cell.onclick = () => {
+      clicked.push(cell.textContent);
+      input.value = `2005-${String(month).padStart(2, "0")}`;
+      panelOpen = false;
+    };
+    monthCells.push(cell);
+  }
+
+  panel = new HTMLElement();
+  panel.className = "phoenix-calendar phoenix-calendar-month-calendar";
+  panel.querySelector = (selector) => (selector.includes("header") ? header : null);
+  panel.querySelectorAll = (selector) => {
+    if (selector.includes("phoenix-calendar-month-panel-body")) return monthCells;
+    if (selector.includes("td, th, div, span, li, button, label, a")) return monthCells;
+    return [];
+  };
+
+  const entry = { kind: "element", element: input, pickerType: "phoenix", pickerInputType: "time" };
+  const pending = helpers.setElementValue(entry, "2005-03");
+  await drainTimers(timers);
+
+  assert.equal(await pending, true);
+  assert.equal(headerState.year, 2005, "教育经历起始月份要把面板翻到 2005 年");
+  assert.deepEqual(clicked, ["3月"], "2005-03 应点 3月，不能把 20 当月份，也不能当钟点处理");
+  assert.equal(input.value, "2005-03");
+});
+
+test("月份字段收到带日的值：只点月份，兜底写入也不能把日写进去", async () => {
+  let panel = null;
+  const { helpers, timers, HTMLElement, HTMLInputElement } = loadHighlightHelpers({
+    dom(selector) {
+      if (selector.includes("phoenix-calendar:not")) return panel ? [panel] : [];
+      return undefined;
+    }
+  });
+
+  const input = new HTMLInputElement();
+  input.readOnly = true;
+  input.type = "text";
+  input.attributes.placeholder = "请选择年月";
+
+  const clicked = [];
+  const monthCells = [];
+  for (let month = 1; month <= 12; month += 1) {
+    const cell = new HTMLElement();
+    cell.className = "phoenix-calendar-month-panel-cell";
+    cell.textContent = `${month}月`;
+    cell.children = [];
+    // 北森点完月份面板不一定立刻关掉，这里模拟面板还在，逼出兜底写值那条路
+    cell.onclick = () => clicked.push(cell.textContent);
+    monthCells.push(cell);
+  }
+
+  panel = new HTMLElement();
+  panel.className = "phoenix-calendar phoenix-calendar-month-calendar";
+  panel.querySelector = () => null;
+  panel.querySelectorAll = (selector) =>
+    (selector.includes("phoenix-calendar-month-panel-body") || selector.includes("td, th, div, span")) ? monthCells : [];
+
+  const entry = { kind: "element", element: input, pickerType: "phoenix", pickerInputType: "month" };
+  const pending = helpers.setElementValue(entry, "2005-01-17");
+  await drainTimers(timers);
+
+  assert.equal(await pending, true);
+  assert.deepEqual(clicked, ["1月"], "月份面板里没有 17 号，不能再点第三个格子");
+  assert.equal(input.value, "2005-01", "月份字段写入的值不能带日，否则 moment.js 解析会报错");
+});
+
+test("类名混淆的下拉（Moka / styled-components）按弹出层内的文本节点选中选项", async () => {
+  let popup = null;
+  const { helpers, HTMLElement, HTMLInputElement } = loadHighlightHelpers({
+    dom(selector) {
+      if (selector.includes("[class*='options']")) return popup ? [popup] : [];
+      return undefined;
+    }
+  });
+
+  const container = new HTMLElement();
+  container.className = "css-1q2w3e";
+  container.querySelectorAll = () => [];
+  container.querySelector = () => null;
+
+  const input = new HTMLInputElement();
+  input.readOnly = true;
+  input.attributes.placeholder = "请选择";
+  input.className = "css-9z8y7x";
+
+  const optionNodes = ["本科", "硕士研究生", "大专"].map((text) => {
+    const node = new HTMLElement();
+    node.textContent = text;
+    node.className = "css-leaf";
+    node.children = [];
+    return node;
+  });
+
+  popup = new HTMLElement();
+  popup.className = "css-pop-7";
+  popup.contains = (el) => el === input;
+  popup.querySelector = (selector) => (selector.includes("input[") ? null : { stub: true });
+  popup.querySelectorAll = (selector) => (selector.includes("[role='option']") ? [] : optionNodes);
+
+  const entry = { kind: "element", element: input, customSelectType: "generic", selectContainer: container };
+  const filled = await helpers.setElementValue(entry, "硕士研究生");
+
+  assert.equal(filled, true);
+  assert.equal(optionNodes[1].clickCount, 1, "应点到文本匹配的选项");
+  assert.equal(optionNodes[0].clickCount, undefined);
+  assert.equal(container.clickCount, 1, "没有箭头图标时不应重试点击导致下拉被关掉");
+  assert.equal(input.value, "", "自定义下拉框应由组件选项更新，不能伪造输入框显示值");
+});
+
+test("类名全混淆的日期面板（Moka / styled-components）按单元格文本翻页并选中月份", async () => {
+  let panel = null;
+  let panelOpen = true;
+  const { helpers, timers, HTMLElement, HTMLInputElement } = loadHighlightHelpers({
+    dom(selector) {
+      if (selector.includes("phoenix-calendar:not")) return [];
+      if (selector.includes("[class*='overlay']")) return panelOpen ? [panel] : [];
+      return undefined;
+    }
+  });
+
+  const input = new HTMLInputElement();
+  input.readOnly = true;
+  input.type = "text";
+  input.attributes.placeholder = "请选择月份";
+
+  const clicked = [];
+  const yearLabel = new HTMLElement();
+  yearLabel.className = "css-3h2j1k";
+  yearLabel.textContent = "2026";
+  yearLabel.children = [];
+
+  const headerish = new HTMLElement();
+  headerish.className = "css-9s8d7f";
+  headerish.textContent = "2026";
+  headerish.querySelectorAll = () => [prevBtn, nextBtn];
+
+  const prevBtn = new HTMLElement();
+  prevBtn.className = "css-prev-btn";
+  const nextBtn = new HTMLElement();
+  nextBtn.className = "css-next-btn";
+  prevBtn.onclick = () => {
+    const year = parseInt(yearLabel.textContent, 10) - 1;
+    yearLabel.textContent = String(year);
+    headerish.textContent = String(year);
+  };
+  yearLabel.parentElement = headerish;
+
+  const monthCells = [];
+  for (let month = 1; month <= 12; month += 1) {
+    const cell = new HTMLElement();
+    cell.className = "css-cell";
+    cell.textContent = `${month}月`;
+    cell.children = [];
+    cell.onclick = () => {
+      clicked.push(cell.textContent);
+      input.value = `2005-${String(month).padStart(2, "0")}`;
+      panelOpen = false;
+    };
+    monthCells.push(cell);
+  }
+
+  const allCells = [yearLabel, ...monthCells];
+  panel = new HTMLElement();
+  panel.className = "css-0p9a8s";
+  panel.querySelector = () => null;
+  panel.querySelectorAll = (selector) => (selector.includes("div") ? allCells : []);
+
+  const entry = { kind: "element", element: input, pickerType: "generic", pickerInputType: "month" };
+  const pending = helpers.setElementValue(entry, "2005-03");
+  await drainTimers(timers);
+
+  assert.equal(await pending, true);
+  assert.equal(yearLabel.textContent, "2005", "类名混淆时也要把面板翻到目标年份");
+  assert.equal(prevBtn.clickCount, 21);
+  assert.deepEqual(clicked, ["3月"]);
 });

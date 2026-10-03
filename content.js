@@ -43,7 +43,8 @@
     currentStore: null,
     statusTimer: null,
     lastFocusedField: null,
-    chipAction: null
+    chipAction: null,
+    stepwiseContinue: null
   };
 
   const StorageService = {
@@ -141,6 +142,7 @@
           <button class="resume-pro__manager-button" id="resume-pro-open-profile" type="button">编辑我的信息</button>
         </div>
         <button class="resume-pro__ai-button" id="resume-pro-ai-fill" type="button">一键 AI 填写</button>
+        <button class="resume-pro__manager-button" id="resume-pro-stepwise-fill" type="button">自动逐步填写</button>
         <button class="resume-pro__manager-button" id="resume-pro-repeat-fill" type="button">AI 辅助新增条目（先预览）</button>
         <button class="resume-pro__manager-button" id="resume-pro-cancel-fill" type="button" hidden>取消 AI 等待（保留本地匹配）</button>
         <p id="resume-pro-wait-hint" role="status" hidden></p>
@@ -227,6 +229,15 @@
     });
 
     aiFillButton.addEventListener("click", handleAiFillClick);
+    sidebar.querySelector("#resume-pro-stepwise-fill").addEventListener("click", (event) => {
+      if (state.stepwiseContinue) {
+        const continueFill = state.stepwiseContinue;
+        state.stepwiseContinue = null;
+        continueFill();
+        return;
+      }
+      handleAiFillClick(event, { stepwise: true });
+    });
     sidebar.querySelector("#resume-pro-repeat-fill").addEventListener("click", handleRepeatFillClick);
     openManagerButton?.addEventListener("click", () => openManager());
     openProfileButton?.addEventListener("click", () => openManager("profile"));
@@ -739,6 +750,8 @@
 
   async function handleAiFillClick(event, assisted = null) {
     const button = event.currentTarget;
+    const stepwise = assisted?.stepwise === true;
+    const scopedAssisted = Boolean(assisted?.scopes?.length);
     if (button.disabled) return;
     const activeTemplate = getActiveTemplate(state.currentStore);
     const aiConfig = state.currentStore?.aiConfig;
@@ -773,7 +786,7 @@
     try {
       const scanned = scanFillableFields();
       const fieldMap = scanned.fieldMap;
-      const fields = assisted ? scanned.fields.filter(field => {
+      const fields = scopedAssisted ? scanned.fields.filter(field => {
         const entry = fieldMap.get(field.fieldId);
         return entry?.kind === "element" && isAssistedTextField(entry) && assisted.scopes.some(scope => scope.contains(entry.element)) && !hasExistingValue(entry);
       }) : scanned.fields;
@@ -781,7 +794,7 @@
       timing.scanMs = performance.now() - phaseStart;
       phase = null;
       if (!fields.length) throw new Error("当前页面没有可填写的表单字段。");
-      if (!assisted) closeProfileOffer();
+      if (!scopedAssisted) closeProfileOffer();
       // 模板字段在前并且优先；「我的信息」只补模板里没有的字段名。
       const templateFields = activeTemplate ? flattenTemplateFields(activeTemplate) : [];
       const resumeFields = self.ResumeProProfile
@@ -858,26 +871,20 @@
         return (domOrderMap.get(a.fieldId) ?? 0) - (domOrderMap.get(b.fieldId) ?? 0);
       });
 
-      for (const match of sortedMatches) {
-        if (assisted && getActiveTemplate(state.currentStore) !== activeTemplate) throw new Error("模板已变化，已停止辅助填写，请核对网页。");
+      const processMatch = async (match) => {
+        if (scopedAssisted && getActiveTemplate(state.currentStore) !== activeTemplate) return { ok: false, reason: "模板已变化，请核对网页。" };
         const element = fieldMap.get(match.fieldId);
-
-        if (!element) continue;
-        if (assisted && (!isAssistedTextField(element) || hasExistingValue(element) || !assisted.scopes.some(scope => scope.isConnected && scope.contains(element.element)))) continue;
+        if (!element) return { ok: true };
+        if (scopedAssisted && (!isAssistedTextField(element) || hasExistingValue(element) || !assisted.scopes.some(scope => scope.isConnected && scope.contains(element.element)))) return { ok: true };
 
         let filled = setElementValue(element, match.value);
-        if (filled instanceof Promise) {
-          filled = await filled;
-        }
-        if (assisted && filled) {
-          await new Promise(resolve => window.setTimeout(resolve, 50));
-          filled = element.element.isConnected && element.element.value === match.value;
+        if (filled instanceof Promise) filled = await filled;
+        if (filled && (stepwise || scopedAssisted)) {
+          await new Promise(resolve => window.setTimeout(resolve, stepwise ? 100 : 50));
+          if (element.kind === "element") filled = element.element.isConnected && element.element.value === match.value;
         }
 
         const fieldMeta = fieldMetaMap.get(match.fieldId);
-
-        // 联动下拉的选项是上一级选完才异步加载的。没被识别成联动组、但除了「请选择」还没有选项的下拉框
-        // 也按同样的方式等一等（和 worker 放行它用的是同一个判断）；选项出来了却对不上，不再白等。
         if (!filled && element.kind === "element" && element.element instanceof HTMLSelectElement
           && (fieldMeta?.cascadeGroup !== undefined || !hasRealSelectOptions(element.element))) {
           for (let retry = 0; retry < 3; retry++) {
@@ -886,31 +893,65 @@
             if (filled || (fieldMeta?.cascadeGroup === undefined && hasRealSelectOptions(element.element))) break;
           }
         }
-
         if (filled) {
           filledCount += 1;
           highlightFilledField(element, match.value);
-        } else if (assisted) {
+        } else if (scopedAssisted) {
           unconfirmedCount += 1;
         } else {
           unfilledLabels.push(fieldMeta?.label || fieldMeta?.placeholder || fieldMeta?.name || "未命名字段");
         }
-
         if (filled && fieldMeta?.cascadeGroup !== undefined) {
           const groupFields = fields.filter((f) => f.cascadeGroup === fieldMeta.cascadeGroup);
           const maxLevelInGroup = Math.max(...groupFields.map((f) => f.cascadeLevel));
-
-          if (fieldMeta.cascadeLevel < maxLevelInGroup) {
-            await new Promise((resolve) => setTimeout(resolve, 250));
-          }
+          if (fieldMeta.cascadeLevel < maxLevelInGroup) await new Promise((resolve) => setTimeout(resolve, 250));
         }
+        if (stepwise && !filled) return { ok: false, reason: `「${fieldMeta?.label || fieldMeta?.placeholder || fieldMeta?.name || "未命名字段"}」未确认，请手动处理后继续。` };
+        return { ok: true };
+      };
+
+      if (stepwise) {
+        const runner = self.ResumeProStepwise.createStepwiseRunner({
+          items: sortedMatches,
+          execute: processMatch,
+          wait: async () => new Promise(resolve => setTimeout(resolve, 120)),
+          onUpdate: (progress) => {
+            if (progress.status === "running") button.textContent = `逐步填写中 ${Math.min(progress.index + 1, progress.total)}/${progress.total}`;
+          }
+        });
+        const continueButton = shadowRoot?.querySelector("#resume-pro-stepwise-fill");
+        const stopStepwise = () => {
+          runner.stop();
+          const continueFill = state.stepwiseContinue;
+          state.stepwiseContinue = null;
+          continueFill?.();
+        };
+        if (cancelButton) {
+          cancelButton.hidden = false;
+          cancelButton.disabled = false;
+          cancelButton.textContent = "停止逐步填写";
+          cancelButton.onclick = stopStepwise;
+        }
+        let result = await runner.start();
+        while (result.status === "paused") {
+          button.disabled = false;
+          if (continueButton) continueButton.textContent = "继续逐步填写";
+          showStatus(result.reason || "逐步填写已暂停。", "error", true);
+          await new Promise(resolve => { state.stepwiseContinue = resolve; });
+          button.disabled = true;
+          if (continueButton) continueButton.textContent = "自动逐步填写";
+          result = await runner.resume();
+        }
+        if (result.status === "stopped") throw new Error("逐步填写已停止，已填写内容请核对。");
+      } else {
+        for (const match of sortedMatches) await processMatch(match);
       }
 
       outcome = response.warning || unconfirmedCount || unfilledLabels.length ? "partial" : "success";
       const unfilledNote = unfilledLabels.length
         ? `${unfilledLabels.length} 项没填上：${summarizeLabels(unfilledLabels)}，请手动补上。`
         : "";
-      if (assisted) {
+      if (scopedAssisted) {
         showStatus(`辅助填写：已验证 ${filledCount} 项。${unconfirmedCount ? `${unconfirmedCount} 项未确认，请核对网页。` : ""}${response.warning || ""}`, outcome === "partial" ? "error" : "success");
       } else if (response.warning) {
         showStatus(`本地已填写 ${filledCount} 项；${unfilledNote}${response.warning}`, "error", Boolean(unfilledNote));
@@ -921,7 +962,7 @@
         showStatus(`已填写 ${filledCount} 个字段。`, "success");
       }
 
-      if (!assisted) {
+      if (!scopedAssisted) {
         const matchedIds = new Set(response.matches.map((match) => match.fieldId));
         offerUnansweredFields(fields.map((field) => ({
           label: field.label || field.placeholder || field.name,
@@ -934,6 +975,7 @@
     } catch (error) {
       showStatus(error.message || "AI 填写失败。", "error");
     } finally {
+      state.stepwiseContinue = null;
       if (cancelButton) {
         cancelButton.hidden = true;
         cancelButton.onclick = null;
@@ -954,6 +996,7 @@
       button.disabled = false;
       if (repeatButton) repeatButton.disabled = false;
       button.textContent = "一键 AI 填写";
+      if (stepwise) button.textContent = "自动逐步填写";
     }
   }
 
@@ -985,9 +1028,17 @@
   }
 
   function scanFillableFields() {
-    const candidates = Array.from(document.querySelectorAll(
-      "input:not([type='hidden']):not([type='file']):not([type='button']):not([type='submit']):not([type='reset']):not([disabled]), textarea:not([disabled]), select:not([disabled])"
-    )).filter((element) => isVisible(element) && !element.closest(`#${SIDEBAR_ID}`));
+    const selector = "input:not([type='hidden']):not([type='file']):not([type='button']):not([type='submit']):not([type='reset']):not([disabled]), textarea:not([disabled]), select:not([disabled])";
+    const documents = [document];
+    for (const frame of Array.from(document.querySelectorAll("iframe"))) {
+      try {
+        if (frame.contentDocument && !documents.includes(frame.contentDocument)) documents.push(frame.contentDocument);
+      } catch (_) {
+        // Cross-origin frames are scanned by their own all_frames content script.
+      }
+    }
+    const candidates = [...new Set(documents.flatMap((rootDocument) => Array.from(rootDocument.querySelectorAll(selector))))]
+      .filter((element) => isVisible(element) && !element.closest(`#${SIDEBAR_ID}`));
 
     const fieldMap = new Map();
     const fields = [];
@@ -1054,7 +1105,12 @@
     const pickerSelectors = [
       { selector: ".ant-picker", pickerType: "antd" },
       { selector: ".el-date-editor", pickerType: "element" },
-      { selector: "[class*='date-picker']", pickerType: "generic" }
+      { selector: ".arco-picker", pickerType: "arco" },
+      { selector: ".semi-picker", pickerType: "semi" },
+      { selector: ".phoenix-date-picker", pickerType: "phoenix" },
+      { selector: "[class*='date-picker']", pickerType: "generic" },
+      { selector: "[class*='datepicker']", pickerType: "generic" },
+      { selector: "[class*='DatePicker']", pickerType: "generic" }
     ];
 
     pickerSelectors.forEach(({ selector, pickerType }) => {
@@ -1098,6 +1154,138 @@
             group: findNearestGroupLabel(inner)
           });
         });
+      });
+    });
+
+    // 自定义下拉组件扫描 (Custom Select/Combobox Detection)
+    // 许多现代 Web 应用使用自定义下拉组件（如 Ant Design、Element UI 等），而不是原生 <select>
+    const customSelectSelectors = [
+      { selector: ".ant-select", type: "ant" },
+      { selector: ".el-select", type: "element" },
+      { selector: ".arco-select", type: "arco" },
+      { selector: ".semi-select", type: "semi" },
+      { selector: ".phoenix-select", type: "phoenix" },
+      { selector: "[class*='phoenix-select']", type: "phoenix" },
+      { selector: ".t-select", type: "tdesign" },
+      { selector: ".next-select", type: "fusion" },
+      { selector: "[role='combobox']", type: "generic" }
+    ];
+
+    customSelectSelectors.forEach(({ selector, type }) => {
+      document.querySelectorAll(selector).forEach((container) => {
+        if (container.closest(`#${SIDEBAR_ID}`)) return;
+        if (!isVisible(container)) return;
+
+        // 找到实际的输入元素
+        let inputElement = null;
+        if (type === "generic") {
+          // role="combobox" 本身就是输入元素
+          inputElement = container instanceof HTMLInputElement ? container : container.querySelector("input");
+        } else {
+          // 自定义组件容器内查找输入框
+          inputElement = container.querySelector("input:not([type='hidden']):not([disabled])");
+        }
+
+        // 没有可见输入框时，用容器本身作为交互目标（部分框架的下拉不暴露 input）
+        const interactiveElement = (inputElement && isVisible(inputElement)) ? inputElement : container;
+
+        // 检查是否已被扫描过
+        const existingEntry = Array.from(fieldMap.entries()).find(([, v]) => v.element === interactiveElement);
+        if (existingEntry) return;
+
+        // 不在扫描阶段收集选项：框架下拉（Ant Design 等）常用虚拟化渲染，
+        // 选项只有在弹出层打开后才出现在 DOM 里。扫描时从整个 document 收集会把别的下拉的选项也混进来。
+        // 选项在填写时由 selectComboboxOption 打开弹窗后动态查找。
+        const fieldId = `field-${fields.length}`;
+        fieldMap.set(fieldId, { kind: "element", element: interactiveElement, customSelectType: type, selectContainer: container });
+        fields.push({
+          fieldId,
+          label: getFieldLabel(interactiveElement),
+          placeholder: (inputElement?.getAttribute("placeholder")) || container.getAttribute("placeholder") || "",
+          name: inputElement?.getAttribute("name") || "",
+          idAttr: (interactiveElement instanceof HTMLElement ? interactiveElement.id : "") || "",
+          ariaLabel: interactiveElement.getAttribute("aria-label") || "",
+          tagName: interactiveElement.tagName.toLowerCase(),
+          inputType: "combobox",
+          customSelectType: type,
+          options: [],
+          group: findNearestGroupLabel(inputElement)
+        });
+      });
+    });
+
+    // 类名混淆平台的兜底扫描（北森 phoenix、Moka 用 styled-components/CSS Modules，类名不可靠）：
+    // 只读输入框 + 占位符语义来判断这是日期控件还是下拉
+    document.querySelectorAll("input[readonly]").forEach((inner) => {
+      if (inner.closest(`#${SIDEBAR_ID}`)) return;
+      if (!isVisible(inner)) return;
+
+      const placeholder = (inner.getAttribute("placeholder") || "").trim();
+      if (!placeholder) return;
+
+      const existingEntry = Array.from(fieldMap.entries()).find(([, v]) => v.kind === "element" && v.element === inner);
+      const looksLikeDate = /日期|年份|月份|时间|\d{4}[-/.]\d{1,2}/.test(placeholder);
+      if (!looksLikeDate && !/请选择|选择|Select|Choose/i.test(placeholder)) return;
+
+      const wrapper = inner.closest("[class*='select'], [class*='Select'], [class*='picker'], [class*='Picker'], [class*='date'], [class*='Date'], [class*='dropdown']")
+        || inner.parentElement;
+      if (!wrapper) return;
+
+      if (looksLikeDate) {
+        const pickerInputType = inferPickerInputType(wrapper, inner);
+        // 之前被当成普通下拉登记过（比如日期控件上也挂了 role="combobox"），改判为日期控件
+        if (existingEntry) {
+          const [existingId, entryValue] = existingEntry;
+          if (entryValue.pickerType) return;
+          entryValue.pickerType = "generic";
+          entryValue.pickerInputType = pickerInputType;
+          delete entryValue.customSelectType;
+          delete entryValue.selectContainer;
+          const existingField = fields.find((f) => f.fieldId === existingId);
+          if (existingField) {
+            existingField.inputType = "date-picker";
+            existingField.pickerType = "generic";
+            existingField.pickerInputType = pickerInputType;
+            delete existingField.customSelectType;
+          }
+          return;
+        }
+
+        const fieldId = `field-${fields.length}`;
+        fieldMap.set(fieldId, { kind: "element", element: inner, pickerType: "generic", pickerInputType });
+        fields.push({
+          fieldId,
+          label: getFieldLabel(inner),
+          placeholder,
+          name: inner.getAttribute("name") || "",
+          idAttr: inner.id || "",
+          ariaLabel: inner.getAttribute("aria-label") || "",
+          tagName: "input",
+          inputType: "date-picker",
+          pickerType: "generic",
+          pickerInputType,
+          options: [],
+          group: findNearestGroupLabel(inner)
+        });
+        return;
+      }
+
+      if (existingEntry) return;
+
+      const fieldId = `field-${fields.length}`;
+      fieldMap.set(fieldId, { kind: "element", element: inner, customSelectType: "generic", selectContainer: wrapper });
+      fields.push({
+        fieldId,
+        label: getFieldLabel(inner),
+        placeholder,
+        name: inner.getAttribute("name") || "",
+        idAttr: inner.id || "",
+        ariaLabel: inner.getAttribute("aria-label") || "",
+        tagName: "input",
+        inputType: "combobox",
+        customSelectType: "generic",
+        options: [],
+        group: findNearestGroupLabel(inner)
       });
     });
 
@@ -1252,33 +1440,375 @@
       && !(isPlaceholder && isPlaceholder({ value: option.value, text: option.text, disabled: option.disabled })));
   }
 
-  async function selectComboboxOption(element, value) {
-    element.click();
+  // 在一组候选弹出层里挑最合适的：可见 → 含选项 → 与触发器相关 → 文档顺序最后（刚打开的那个）
+  function pickBestPopup(candidates, element) {
+    const visible = candidates.filter((el) => el instanceof HTMLElement
+      && isVisible(el)
+      && !el.closest(`#${SIDEBAR_ID}`));
+    if (!visible.length) return null;
 
+    const withOptions = visible.filter((el) => el.querySelector("[role='option'], [class*='option'], [class*='item'], li"));
+    const pool = withOptions.length ? withOptions : visible;
+
+    const related = pool.find((el) => el.contains(element));
+    if (related) return related;
+
+    return pool[pool.length - 1];
+  }
+
+  function findComboboxPopupContainer(element) {
+    // 1. aria-controls → 直接指向弹出层 id（Ant Design 5 等）
+    const controlsId = element.getAttribute("aria-controls");
+    if (controlsId) {
+      const controlled = document.getElementById(controlsId);
+      if (controlled) return controlled;
+    }
+
+    // 2. aria-owns → 指向弹出层 id
+    const ownsId = element.getAttribute("aria-owns");
+    if (ownsId) {
+      const owned = document.getElementById(ownsId);
+      if (owned) return owned;
+    }
+
+    // 3. 框架特定的弹出层容器（通常挂载在 body 下）
+    const frameworkPopupSelectors = [
+      ".ant-select-dropdown",
+      ".el-select-dropdown",
+      ".arco-select-dropdown",
+      ".semi-select-dropdown",
+      ".phoenix-select-dropdown",
+      ".t-select-dropdown",
+      ".next-select-menu-wrapper",
+      "[class*='phoenix'][class*='dropdown']",
+      "[class*='select-dropdown']:not([style*='display: none'])",
+      "[class*='select-popup']:not([style*='display: none'])"
+    ];
+    for (const selector of frameworkPopupSelectors) {
+      const popup = pickBestPopup(Array.from(document.querySelectorAll(selector)), element);
+      if (popup) return popup;
+    }
+
+    // 4. role="listbox" 可见弹出层
+    const listbox = pickBestPopup(Array.from(document.querySelectorAll("[role='listbox']")), element);
+    if (listbox) return listbox;
+
+    // 5. 兜底：查找任何可见的下拉/弹出容器（含选项类元素）
+    const genericPopup = pickBestPopup(Array.from(document.querySelectorAll(
+      "[class*='dropdown']:not(input):not(select):not(button), [class*='popup']:not(input):not(select):not(button), [class*='options']:not(input)"
+    )), element);
+    if (genericPopup) return genericPopup;
+
+    return null;
+  }
+
+  // 按单元格文本识别日期/月份/年份面板：类名混淆时（北森 phoenix、Moka）比选择器可靠
+  function looksLikeDateGrid(el) {
+    const texts = Array.from(el.querySelectorAll("td, div, span, li, button")).slice(0, 150)
+      .map((cell) => (cell.textContent || "").trim());
+    const monthCells = texts.filter((t) => /^\d{1,2}\s*月$/.test(t)
+      || /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*$/i.test(t)).length;
+    const dayCells = texts.filter((t) => /^([1-9]|[12]\d|3[01])$/.test(t)).length;
+    const yearCells = texts.filter((t) => /^(19|20)\d{2}$/.test(t)).length;
+    return monthCells >= 6 || dayCells >= 14 || yearCells >= 4;
+  }
+
+  async function findPickerPanel() {
+    // 常见框架日期选择器面板类名
+    const panelSelectors = [
+      ".ant-picker-dropdown:not([style*='display: none']):not(.ant-picker-dropdown-hidden)",
+      ".el-picker-panel",
+      ".arco-picker-popup:not([style*='display: none'])",
+      ".semi-datepicker-popover:not([style*='display: none'])",
+      ".phoenix-calendar:not([style*='display: none'])",
+      ".phoenix-date-picker_wrap",
+      "[class*='DatePickerPopup']:not([style*='display: none'])",
+      "[class*='date-picker__panel']:not([style*='display: none'])"
+    ];
+    for (const selector of panelSelectors) {
+      const panels = Array.from(document.querySelectorAll(selector));
+      const visible = panels.find(isVisible);
+      if (visible) return visible;
+    }
+    // 兜底：按单元格文本判断，不依赖类名（北森/Moka 的类名常被混淆）
+    const candidates = Array.from(document.querySelectorAll(
+      "[class*='picker']:not(input):not(select):not(button), [class*='calendar'], [class*='DatePicker'], [class*='panel'], [class*='popup'], [class*='overlay']"
+    )).filter((el) => el instanceof HTMLElement
+      && isVisible(el)
+      && !el.closest(`#${SIDEBAR_ID}`)
+      && looksLikeDateGrid(el));
+    // 文档顺序最后的是刚打开的面板（也通常是只包住日期格子的那层）
+    return candidates[candidates.length - 1] || null;
+  }
+
+  function clickPanelCell(cell) {
+    if (!cell || typeof cell.click !== "function") return false;
+    const canDispatch = typeof cell.dispatchEvent === "function";
+    if (canDispatch) {
+      cell.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      cell.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    }
+    cell.click();
+    if (canDispatch) {
+      cell.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    }
+    return true;
+  }
+
+  // 未知日历组件兜底：面板主体内找文本完全一致的单元格（北森/Moka 等类名混淆时可用）
+  function findPanelCellByText(panel, targetText) {
+    const candidates = Array.from(panel.querySelectorAll("td, th, div, span, li, button, label, a"))
+      .filter((el) => isVisible(el)
+        && !el.closest(`#${SIDEBAR_ID}`)
+        && !el.closest("[class*='header'], [class*='Header'], [class*='footer'], [class*='Footer']"));
+    const exact = candidates.filter((el) => (el.textContent || "").trim() === targetText);
+    if (!exact.length) return null;
+    // 取面积最小的节点，避免整块面板容器被误点
+    return exact.reduce((best, el) => {
+      const a = el.getBoundingClientRect();
+      const b = best.getBoundingClientRect();
+      return a.width * a.height < b.width * b.height ? el : best;
+    });
+  }
+
+  async function clickPickerPanelElement(panel, targetText) {
+    // 月份选择器：查找 "1月"-"12月"、"Jan"-"Dec" 等
+    const monthPatterns = [
+      `[data-month]`,
+      `.ant-picker-cell-inner`,
+      `.el-date-table td`,
+      `.arco-picker-cell-inner`,
+      `.semi-datepicker-month-grid-item`,
+      ".phoenix-calendar-month-panel-body div",
+      "[role='gridcell']"
+    ];
+    for (const selector of monthPatterns) {
+      const cells = Array.from(panel.querySelectorAll(selector)).filter(isVisible);
+      const match = cells.find((cell) => {
+        const text = cell.textContent?.trim() || "";
+        const ariaLabel = cell.getAttribute("aria-label") || "";
+        // 文本匹配
+        if (text === targetText || ariaLabel.includes(targetText) || text.includes(targetText)) {
+          return true;
+        }
+        // data-month 属性数字匹配（如 targetText="9月" 匹配 data-month="8"，因为 data-month 从 0 开始）
+        const dataMonth = cell.getAttribute("data-month");
+        if (dataMonth !== null) {
+          const monthNum = parseInt(dataMonth, 10) + 1; // data-month 从 0 开始
+          const targetMonthMatch = targetText.match(/(\d{1,2})/);
+          if (targetMonthMatch && parseInt(targetMonthMatch[1], 10) === monthNum) {
+            return true;
+          }
+        }
+        return false;
+      });
+      if (match) {
+        return clickPanelCell(match);
+      }
+    }
+    // 年份选择器：查找四位年份（面板标题里的年份不算，交给 navigatePanelYear 处理）
+    if (/^\d{4}$/.test(targetText)) {
+      const yearCells = Array.from(panel.querySelectorAll(
+        ".ant-picker-cell-inner, .el-year-table td, .arco-picker-cell-inner, [role='gridcell']"
+      )).filter((cell) => isVisible(cell)
+        && !cell.closest("[class*='header'], [class*='Header'], [class*='footer'], [class*='Footer']"));
+      const match = yearCells.find((cell) => (cell.textContent?.trim() || "") === targetText);
+      if (match) {
+        return clickPanelCell(match);
+      }
+    }
+    // 日期选择器：查找 1-31 的日期
+    if (/^\d{1,2}$/.test(targetText)) {
+      const dayCells = Array.from(panel.querySelectorAll(
+        ".ant-picker-cell-inner, .el-date-table td, .arco-picker-cell-inner, .phoenix-calendar-date-panel div, [role='gridcell']"
+      )).filter(isVisible);
+      const match = dayCells.find((cell) => (cell.textContent?.trim() || "") === targetText);
+      if (match) {
+        return clickPanelCell(match);
+      }
+    }
+    // 通用兜底：按文本在面板内找单元格
+    return clickPanelCell(findPanelCellByText(panel, targetText));
+  }
+
+  // 通过面板头部的上/下年按钮翻到目标年份（北森 phoenix、Moka 等只有标题年份、没有年份格子的组件）
+  async function navigatePanelYear(panel, targetYear) {
+    let header = panel.querySelector("[class*='header'], [class*='Header']");
+    let yearLabel = null;
+    if (!header) {
+      // 类名混淆时：把第一个"纯四位年份"文本的父节点当作标题栏
+      yearLabel = Array.from(panel.querySelectorAll("span, div, button, a, td"))
+        .find((el) => el.children.length === 0 && /^(19|20)\d{2}$/.test((el.textContent || "").trim()));
+      header = yearLabel?.parentElement || null;
+    }
+    if (!header) return;
+
+    const MAX_CLICKS = 60;
+    for (let i = 0; i < MAX_CLICKS; i += 1) {
+      const years = ((header.textContent || "").match(/(19|20)\d{2}/g) || []).map((t) => parseInt(t, 10));
+      if (!years.length) return;
+
+      const low = Math.min(...years);
+      const high = Math.max(...years);
+      if (targetYear >= low && targetYear <= high) return;
+
+      const navButtons = Array.from(header.querySelectorAll("button, [role='button'], i, span, [class*='btn'], [class*='icon'], [class*='arrow']"))
+        .filter((el) => el !== yearLabel && isVisible(el) && typeof el.click === "function");
+      if (navButtons.length < 2) return;
+
+      const hintsOf = (el) => `${typeof el.className === "string" ? el.className : el.getAttribute?.("class") || ""} ${el.getAttribute?.("aria-label") || ""} ${el.getAttribute?.("title") || ""}`;
+      const prev = navButtons.find((el) => /prev|left|before|上/i.test(hintsOf(el))) || navButtons[0];
+      const next = navButtons.find((el) => /next|right|after|下/i.test(hintsOf(el))) || navButtons[navButtons.length - 1];
+      if (prev === next) return;
+
+      (targetYear < low ? prev : next).click();
+      await new Promise((r) => window.setTimeout(r, 80));
+    }
+  }
+
+  async function selectComboboxOption(element, value, container) {
+    // 有些框架需要点击容器（而非输入框本身）才能打开下拉
+    const clickTarget = container || element;
+    // 同时触发 mousedown 和 click，部分框架只响应 mousedown
+    clickTarget.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    clickTarget.click();
+    element.focus();
+
+    const target = String(value ?? "").trim();
+    if (!target) return false;
+
+    // 如果触发器本身是搜索输入框（Ant Design showSearch 等），先在其中输入目标值以过滤选项
+    const containerCls = container?.className || "";
+    const inputPlaceholder = (element instanceof HTMLInputElement ? element.getAttribute("placeholder") || "" : "").toLowerCase();
+    const isTriggerSearchInput = (element instanceof HTMLInputElement)
+      && (container?.classList?.contains("ant-select-show-search")
+        || container?.classList?.contains("el-select-filterable")
+        || container?.classList?.contains("arco-select-with-search")
+        || container?.classList?.contains("semi-select-filterable")
+        || /search|filter|可搜索/.test(containerCls)
+        || element.type === "search"
+        || /搜索|search|筛选|filter/.test(inputPlaceholder));
+    if (isTriggerSearchInput && element instanceof HTMLInputElement) {
+      const inputDescriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      if (inputDescriptor?.set) {
+        inputDescriptor.set.call(element, target);
+      } else {
+        element.value = target;
+      }
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true }));
+      await new Promise((resolve) => window.setTimeout(resolve, 200));
+    }
+
+    // 部分平台（北森/Moka）只响应箭头图标的点击，输入框本身点不开下拉
+    const iconTargets = container && typeof container.querySelectorAll === "function"
+      ? Array.from(container.querySelectorAll("[class*='arrow'], [class*='suffix'], [class*='icon'], [role='img'], svg"))
+        .filter((el) => isVisible(el) && typeof el.click === "function")
+      : [];
+
+    let sawPopup = false;
     for (let attempt = 0; attempt < 5; attempt += 1) {
       if (attempt > 0) {
         await new Promise((resolve) => window.setTimeout(resolve, 50));
       }
 
-      const optionElements = Array.from(document.querySelectorAll(
-        "[role='option'], .ant-select-item-option, .el-select-dropdown__item, .arco-select-option, .semi-select-option"
+      // 先尝试定位到当前触发器对应的弹出层，避免多个下拉同时存在时选错
+      const popup = findComboboxPopupContainer(element);
+      if (popup) sawPopup = true;
+      if (!popup && iconTargets.length && attempt < 4) {
+        const retryTarget = attempt % 2 === 1 ? iconTargets[0] : iconTargets[iconTargets.length - 1];
+        retryTarget.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+        retryTarget.click();
+        continue;
+      }
+
+      // 无弹出层时优先在容器内查找（部分框架把选项渲染在容器内部），再兜底到整个 document
+      const searchRoot = popup || (container && container.querySelector("[role='option'], [class*='option'], [class*='dropdown-item']") ? container : document);
+
+      // 如果弹出层内有搜索输入框（Ant Design showSearch 等），先输入关键词过滤选项
+      if (popup) {
+        const dropdownSearchInput = popup.querySelector(
+          "input[type='text'], input[type='search'], input:not([type])"
+        );
+        if (dropdownSearchInput && isVisible(dropdownSearchInput) && !dropdownSearchInput.closest(`#${SIDEBAR_ID}`)) {
+          if (dropdownSearchInput.value !== target) {
+            dropdownSearchInput.focus();
+            const inputDescriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+            if (inputDescriptor?.set) {
+              inputDescriptor.set.call(dropdownSearchInput, "");
+            } else {
+              dropdownSearchInput.value = "";
+            }
+            dropdownSearchInput.dispatchEvent(new Event("input", { bubbles: true }));
+            dropdownSearchInput.dispatchEvent(new Event("change", { bubbles: true }));
+            for (const char of target) {
+              dropdownSearchInput.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
+              if (inputDescriptor?.set) {
+                inputDescriptor.set.call(dropdownSearchInput, dropdownSearchInput.value + char);
+              } else {
+                dropdownSearchInput.value += char;
+              }
+              dropdownSearchInput.dispatchEvent(new Event("input", { bubbles: true }));
+              dropdownSearchInput.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
+            }
+            dropdownSearchInput.dispatchEvent(new Event("change", { bubbles: true }));
+            await new Promise((resolve) => window.setTimeout(resolve, 200));
+          }
+        }
+      }
+
+      let optionElements = Array.from(searchRoot.querySelectorAll(
+        "[role='option'], .ant-select-item-option, .el-select-dropdown__item, .arco-select-option, .semi-select-option, .phoenix-select-option, .t-select-option, .next-menu-item, [class*='select-option'], [class*='dropdown-item']"
       )).filter((option) => isVisible(option)
         && !option.closest(`#${SIDEBAR_ID}`)
         && option.getAttribute("aria-disabled") !== "true"
         && !option.disabled);
+
+      // 类名混淆的平台（Moka/北森用 styled-components）没有可辨认的选项类名，退回弹出层内的文本叶子节点
+      if (!optionElements.length && searchRoot !== document) {
+        optionElements = Array.from(searchRoot.querySelectorAll("li, div, span, label, button, a"))
+          .filter((el) => el.children.length === 0
+            && (el.textContent || "").trim()
+            && isVisible(el)
+            && !el.closest(`#${SIDEBAR_ID}`)
+            && !el.closest("[class*='header'], [class*='Header'], [class*='footer'], [class*='Footer']"));
+      }
+
       const optionIndex = self.ResumeProAIHelpers?.findSelectOptionIndex?.(
         optionElements.map((option) => ({
           value: option.getAttribute("data-value") || option.getAttribute("value") || "",
-          text: option.getAttribute("aria-label") || option.textContent?.trim() || "",
+          text: option.getAttribute("aria-label") || option.getAttribute("data-label") || option.getAttribute("title") || option.textContent?.trim() || "",
           disabled: false
         })),
         value
       ) ?? -1;
 
       if (optionIndex >= 0) {
-        optionElements[optionIndex].click();
+        return clickPanelCell(optionElements[optionIndex]);
+      }
+    }
+
+    // 兜底：用键盘在下拉里选（部分框架拦截了 click 但响应键盘事件）
+    // 下拉压根没打开时别再空转 50 次按键，直接失败，把时间留给后面的字段
+    if (!sawPopup) return false;
+
+    // 键盘事件要发到输入框上，不是容器 div
+    const keyTarget = (element instanceof HTMLInputElement)
+      ? element
+      : (container?.querySelector("input:not([type='hidden']):not([disabled])") || element);
+
+    for (let i = 0; i < 50; i += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 30));
+      const popup = findComboboxPopupContainer(element);
+      const highlighted = popup?.querySelector("[role='option'][aria-selected='true'], .ant-select-item-option-selected, .el-select-dropdown__item.hover, .arco-select-option-selected, .semi-select-option-selected, [class*='select-option'][class*='active'], [class*='select-option'][class*='selected'], [class*='dropdown-item'][class*='active'], [class*='dropdown-item'][class*='selected']");
+      const highlightedText = highlighted?.textContent?.trim() || "";
+      if (highlightedText && self.ResumeProAIHelpers?.findSelectOptionIndex?.([
+        { value: "", text: highlightedText }
+      ], target) >= 0) {
+        keyTarget.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
         return true;
       }
+      keyTarget.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true }));
     }
 
     return false;
@@ -1303,15 +1833,24 @@
 
     const pickerType = (element && typeof element === "object" && element.kind === "element") ? element.pickerType : null;
     const pickerInputType = (element && typeof element === "object" && element.kind === "element") ? (element.pickerInputType || "date") : "date";
+    const customSelectType = (element && typeof element === "object" && element.kind === "element") ? element.customSelectType : null;
+    const selectContainer = (element && typeof element === "object" && element.kind === "element") ? element.selectContainer : null;
 
     if (element && typeof element === "object" && element.kind === "element") {
       element = element.element;
     }
 
+    // 处理自定义下拉组件（Ant Design、Element UI 等）
+    if (customSelectType && element instanceof HTMLElement) {
+      return selectComboboxOption(element, value, selectContainer);
+    }
+
+    // 日期控件也经常挂 role="combobox"（北森、Ant Design 都这样），已经认出是日期面板的就别当下拉框点
     if (element instanceof HTMLInputElement
       && element.readOnly
-      && element.getAttribute("role") === "combobox") {
-      return selectComboboxOption(element, value);
+      && element.getAttribute("role") === "combobox"
+      && !pickerType) {
+      return selectComboboxOption(element, value, selectContainer);
     }
 
     if (element instanceof HTMLInputElement && ["date", "month", "datetime-local", "time"].includes(element.type)) {
@@ -1329,12 +1868,94 @@
       return element.value === normalized;
     }
 
-    if (element instanceof HTMLInputElement && (pickerType === "antd" || pickerType === "element" || pickerType === "generic")) {
+    if (element instanceof HTMLInputElement && (pickerType === "antd" || pickerType === "element" || pickerType === "generic" || pickerType === "arco" || pickerType === "semi" || pickerType === "phoenix")) {
       const normalized = self.ResumeProAIHelpers?.normalizeDateValue?.(value, pickerInputType) ?? value;
+      // 同时触发 mousedown 和 click，部分框架只响应 mousedown
+      element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
       element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
       return new Promise((resolve) => {
-        window.setTimeout(() => {
+        window.setTimeout(async () => {
           try {
+            // 优先尝试通过面板交互填写（月份/年份/日期选择器等需要点击面板内元素）
+            const panel = await findPickerPanel();
+            if (panel) {
+              // 提取目标文本：月份用 "9月"，年份用 "2026"，日期再点几号
+              const panelTarget = (() => {
+                const monthFormats = (monthNum) => [`${monthNum}月`, `${String(monthNum).padStart(2, "0")}月`];
+                const full = normalized.match(/^(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+                if (full && pickerInputType !== "month") {
+                  const monthNum = parseInt(full[2], 10);
+                  return { num: monthNum, formats: monthFormats(monthNum), day: parseInt(full[3], 10), year: full[1] };
+                }
+                // 必须按 "年-月" 取月份，直接抓前两位数字会把 2005 里的 "20" 当成月份
+                const ym = normalized.match(/(\d{4})\D+(\d{1,2})/);
+                if (ym) {
+                  const monthNum = parseInt(ym[2], 10);
+                  if (monthNum >= 1 && monthNum <= 12) {
+                    return { num: monthNum, formats: monthFormats(monthNum), year: ym[1] };
+                  }
+                }
+                const monthOnly = normalized.match(/(\d{1,2})\s*月/);
+                if (monthOnly) {
+                  const monthNum = parseInt(monthOnly[1], 10);
+                  if (monthNum >= 1 && monthNum <= 12) {
+                    return { num: monthNum, formats: monthFormats(monthNum) };
+                  }
+                }
+                return { num: null, formats: [normalized] };
+              })();
+
+              // 先把面板翻到目标年份：优先点年份格子，没有年份格子就翻标题年份（北森/Moka）
+              if (panelTarget.year && /^\d{4}$/.test(panelTarget.year)) {
+                const clickedYear = await clickPickerPanelElement(panel, panelTarget.year);
+                if (!clickedYear) {
+                  await navigatePanelYear(panel, parseInt(panelTarget.year, 10));
+                }
+                await new Promise((r) => window.setTimeout(r, 300));
+              }
+
+              // 点击月份
+              if (panelTarget.formats) {
+                let monthClicked = false;
+                for (const fmt of panelTarget.formats) {
+                  if (await clickPickerPanelElement(panel, fmt)) {
+                    monthClicked = true;
+                    break;
+                  }
+                }
+                // 如果标准格式没匹配，尝试中文数字
+                if (!monthClicked && panelTarget.num) {
+                  const chineseMonths = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
+                  const cnMonth = chineseMonths[panelTarget.num - 1];
+                  if (cnMonth) {
+                    await clickPickerPanelElement(panel, `${cnMonth}月`);
+                  }
+                }
+                await new Promise((r) => window.setTimeout(r, 300));
+
+                // 选了年月后面板通常会换成日期网格，再点几号
+                if (panelTarget.day) {
+                  const dayText = `${panelTarget.day}`;
+                  await clickPickerPanelElement(panel, dayText);
+                }
+              } else if (typeof panelTarget === "string") {
+                await clickPickerPanelElement(panel, panelTarget);
+              }
+
+              // 等待面板关闭（选择完成后面板会自动关闭）
+              await new Promise((r) => window.setTimeout(r, 200));
+              const panelStillVisible = await findPickerPanel();
+              if (!panelStillVisible || element.value) {
+                resolve(true);
+                return;
+              }
+            }
+
+            // 面板交互失败，回退到直接设置输入框值
+            const wasReadOnly = element.readOnly;
+            if (wasReadOnly) element.readOnly = false;
+
             const descriptor = Object.getOwnPropertyDescriptor(element.constructor.prototype, "value");
             if (descriptor?.set) {
               descriptor.set.call(element, normalized);
@@ -1344,12 +1965,31 @@
             element.dispatchEvent(new Event("input", { bubbles: true }));
             element.dispatchEvent(new Event("change", { bubbles: true }));
             element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+
+            if (wasReadOnly) element.readOnly = true;
+
+            if (element.value === normalized) {
+              resolve(true);
+              return;
+            }
+
+            // 逐字符输入兜底
+            element.value = "";
+            element.dispatchEvent(new Event("input", { bubbles: true }));
+            for (const char of normalized) {
+              element.dispatchEvent(new KeyboardEvent("keydown", { key: char, bubbles: true }));
+              element.dispatchEvent(new KeyboardEvent("keypress", { key: char, bubbles: true }));
+              element.value += char;
+              element.dispatchEvent(new Event("input", { bubbles: true }));
+              element.dispatchEvent(new KeyboardEvent("keyup", { key: char, bubbles: true }));
+            }
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+            element.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+            resolve(element.value === normalized || element.value.length > 0);
           } catch (_) {
             resolve(false);
-            return;
           }
-          resolve(element.value === normalized);
-        }, 150);
+        }, 200);
       });
     }
 
@@ -1472,7 +2112,7 @@
     }
 
     if (fieldEntry?.pickerType) {
-      return [element.closest(".ant-picker, .el-date-editor, [class*='date-picker']") || element];
+      return [element.closest(".ant-picker, .el-date-editor, .arco-picker, .semi-picker, [class*='date-picker'], [class*='datepicker'], [class*='DatePicker']") || element];
     }
 
     return [element];

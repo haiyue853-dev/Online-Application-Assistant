@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "minimum_chrome_version": "116",
   "name": "网申助手",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "本地优先、AI 辅助的求职网申表单填写扩展。",
   "permissions": [
     "offscreen",
@@ -54,11 +54,13 @@
         "ai-helpers.js",
         "profile-fields.js",
         "form-agent.js",
+        "stepwise-runner.js",
         "content.js"
       ],
       "css": [
         "content.css"
       ],
+      "all_frames": true,
       "run_at": "document_idle"
     }
   ]

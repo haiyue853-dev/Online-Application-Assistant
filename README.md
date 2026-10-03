@@ -80,7 +80,3 @@ npm run typecheck
 - 一键填写时，本地规则会优先处理；只有未匹配字段才会发送给 AI 服务商。
 - API Key 只用于请求你选择的服务商，项目没有自建中转服务器。
 - 备份默认不包含 API Key；密码、验证码、令牌等敏感字段会被过滤。
-
-## 项目来源
-
-本项目基于 [TshyGO/resume-form-assistant-plugin](https://github.com/TshyGO/resume-form-assistant-plugin) 进行精简和二次开发，保留原项目的 MIT 许可证和版权声明，详见 [LICENSE](LICENSE)。
